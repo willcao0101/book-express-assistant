@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:sqlite:./data/books.db
+    driver-class-name: org.sqlite.JDBC
+
+llm:
+  enabled: true
+  endpoint: http://127.0.0.1:8010/v1/chat/completions
+  model: ollama/deepseek-r1:8b
+  token: ${LLM_TOKEN:yfkw420jaadOYoNg_-_MB6xUNNMAOE0FAFf_PhrhVTI}
+
+#llm:
+#  enabled: true
+#  endpoint: http://127.0.0.1:8010/v1/chat/completions
+#  model: openai/gpt-4o-mini
+#  token: ${LLM_TOKEN:qazxswedc-vfrtgbnhyu-jmkiolp}

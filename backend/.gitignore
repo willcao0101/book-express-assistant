@@ -1,0 +1,117 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Env / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Java / Maven / Spring Boot (backend)
+# =========================
+backend/target/
+backend/.mvn/wrapper/maven-wrapper.jar
+backend/**/dependency-reduced-pom.xml
+
+# If you use Gradle in any module later
+**/.gradle/
+**/build/
+
+# Spring Boot runtime files
+backend/*.pid
+backend/*.pid.lock
+backend/*.hprof
+
+# =========================
+# Node / React (frontend)
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.cache/
+frontend/.turbo/
+frontend/.next/
+frontend/.parcel-cache/
+frontend/coverage/
+
+# TypeScript incremental build info
+frontend/*.tsbuildinfo
+frontend/**/.tsbuildinfo
+
+# =========================
+# Python scripts (if you keep data/import tools)
+# =========================
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# =========================
+# Database / local data
+# =========================
+# Keep local SQLite DB out of git
+data/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# If you want to keep folder structure, uncomment:
+#!data/.gitkeep
+#!backend/data/.gitkeep
+
+# =========================
+# Uploads / generated artifacts
+# =========================
+uploads/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Generated CSV/JSON during scripts
+*.generated.csv
+*.generated.json
+
+# =========================
+# Archive files
+# =========================
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# =========================
+# Optional: mac keychain / cert exports (safety)
+# =========================
+*.p12
+*.pem
+*.key

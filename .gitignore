@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# IntelliJ
+.idea/
+*.iml
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Java
+backend/target/
+
+# Local DB
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
