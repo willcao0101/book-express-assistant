@@ -1,7 +1,8 @@
 package com.bookexpress.account.controller;
 
-import com.bookexpress.account.dto.AccountUpsertRequest;
-import com.bookexpress.account.entity.ShopifyAccountEntity;
+import com.bookexpress.account.dto.AccountCreateRequest;
+import com.bookexpress.account.dto.AccountResponse;
+import com.bookexpress.account.dto.AccountUpdateRequest;
 import com.bookexpress.account.service.AccountService;
 import com.bookexpress.common.web.ApiResponse;
 import org.springframework.web.bind.annotation.*;
@@ -19,17 +20,17 @@ public class AccountController {
     }
 
     @GetMapping
-    public ApiResponse<List<ShopifyAccountEntity>> list() {
+    public ApiResponse<List<AccountResponse>> list() {
         return ApiResponse.ok(service.list());
     }
 
     @PostMapping
-    public ApiResponse<ShopifyAccountEntity> create(@RequestBody AccountUpsertRequest req) {
+    public ApiResponse<AccountResponse> create(@RequestBody AccountCreateRequest req) {
         return ApiResponse.ok(service.create(req));
     }
 
     @PutMapping("/{id}")
-    public ApiResponse<ShopifyAccountEntity> update(@PathVariable Long id, @RequestBody AccountUpsertRequest req) {
+    public ApiResponse<AccountResponse> update(@PathVariable Long id, @RequestBody AccountUpdateRequest req) {
         return ApiResponse.ok(service.update(id, req));
     }
 }

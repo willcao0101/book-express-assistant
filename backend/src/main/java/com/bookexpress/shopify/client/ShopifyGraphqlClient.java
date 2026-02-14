@@ -32,12 +32,15 @@ public class ShopifyGraphqlClient {
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> queryProduct(Long accountId, String productId) {
+        if (accountId == null) {
+            throw new BusinessException("accountId is required");
+        }
+        if (productId == null || productId.isBlank()) {
+            throw new BusinessException("productId is required");
+        }
+
         ShopifyAccountEntity account = accountService.getById(accountId);
         String token = accountService.getAccessTokenPlain(accountId);
-
-        if (token == null || token.isBlank()) {
-            throw new BusinessException("Missing access token for account: " + accountId);
-        }
 
         String url = graphUrlTemplate
                 .replace("{shopDomain}", account.getShopDomain())
@@ -127,35 +130,35 @@ public class ShopifyGraphqlClient {
             }
             """;
 
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("query", query);
-
         Map<String, Object> variables = new HashMap<>();
         variables.put("id", productId);
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("query", query);
         requestBody.put("variables", variables);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("X-Shopify-Access-Token", token);
 
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+        HttpEntity<Map<String, Object>> requestEntity = new HttpEntity<>(requestBody, headers);
 
-        ResponseEntity<Map> response = restTemplate.exchange(
-                url,
-                HttpMethod.POST,
-                entity,
-                Map.class
-        );
+        ResponseEntity<Map> response;
+        try {
+            response = restTemplate.exchange(url, HttpMethod.POST, requestEntity, Map.class);
+        } catch (Exception ex) {
+            throw new BusinessException("Shopify GraphQL request failed: " + ex.getMessage());
+        }
 
         Map<String, Object> body = response.getBody();
         if (body == null) {
-            throw new BusinessException("Shopify API returned empty response body.");
+            throw new BusinessException("Shopify GraphQL response is empty");
         }
 
-        // Handle GraphQL-level errors
+        // Surface Shopify GraphQL errors explicitly
         Object errors = body.get("errors");
         if (errors != null) {
-            throw new BusinessException("Shopify GraphQL error: " + errors);
+            throw new BusinessException("Shopify GraphQL returned errors: " + errors);
         }
 
         return body;

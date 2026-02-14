@@ -19,6 +19,9 @@ app:
     graph-url-template: "https://{shopDomain}/admin/api/{apiVersion}/graphql.json"
     connect-timeout-ms: 10000
     read-timeout-ms: 30000
+    oauth:
+      scopes: read_products,write_products
+      default-redirect-uri: http://localhost:5174/oauth/callback
   security:
     # Replace this with env var in production
     encryption-key: "CHANGE_ME_TO_ENV_KEY"
