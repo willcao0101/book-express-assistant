@@ -5,6 +5,27 @@ spring:
   datasource:
     url: jdbc:sqlite:./data/books.db
     driver-class-name: org.sqlite.JDBC
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.community.dialect.SQLiteDialect
+
+app:
+  shopify:
+    api-version: "2025-01"
+    graph-url-template: "https://{shopDomain}/admin/api/{apiVersion}/graphql.json"
+    connect-timeout-ms: 10000
+    read-timeout-ms: 30000
+  security:
+    # Replace this with env var in production
+    encryption-key: "CHANGE_ME_TO_ENV_KEY"
+  paging:
+    default-size: 20
+    max-size: 100
+
 
 #llm:
 #  enabled: true
