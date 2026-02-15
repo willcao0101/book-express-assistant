@@ -5,6 +5,7 @@ import { fetchProductById } from "../api/product";
 import { listAccounts } from "../api/settings";
 
 const { Text } = Typography;
+const PRODUCT_SEARCH_CACHE_KEY = "bea_product_search_form";
 
 export default function ProductPage() {
   const [form] = Form.useForm();
@@ -15,6 +16,17 @@ export default function ProductPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    const cached = sessionStorage.getItem(PRODUCT_SEARCH_CACHE_KEY);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        form.setFieldsValue({ productId: parsed.productId || "" });
+        setResult(parsed.result || null);
+      } catch {
+        // ignore malformed cache
+      }
+    }
+
     (async () => {
       try {
         const res = await listAccounts();
@@ -29,7 +41,7 @@ export default function ProductPage() {
         message.error(e.message || "Failed to load default account");
       }
     })();
-  }, []);
+  }, [form]);
 
   const onSearch = async () => {
     try {
@@ -41,13 +53,18 @@ export default function ProductPage() {
       const values = await form.validateFields();
       setLoading(true);
 
+      const inputId = String(values.productId).trim();
       const res = await fetchProductById({
         accountId: defaultAccountId,
-        productId: values.productId.trim(),
+        productId: inputId,
       });
 
       if (!res.success) throw new Error(res.message || "Fetch failed");
       setResult(res.data);
+      sessionStorage.setItem(
+        PRODUCT_SEARCH_CACHE_KEY,
+        JSON.stringify({ productId: inputId, result: res.data })
+      );
       message.success("Product fetched");
     } catch (err: any) {
       message.error(err.message || "Fetch failed");
@@ -66,11 +83,10 @@ export default function ProductPage() {
             <Col xs={24} md={20}>
               <Form.Item
                 name="productId"
-                label="Product ID (GID)"
-                // initialValue="8112925769802"
-                rules={[{ required: true, message: "Please input product GID" }]}
+                label="Product ID"
+                rules={[{ required: true, message: "Please input product ID" }]}
               >
-                <Input placeholder="8112925769802" />
+                <Input placeholder="e.g. 8112925769802" />
               </Form.Item>
             </Col>
             <Col xs={24} md={4} style={{ display: "flex", alignItems: "end" }}>

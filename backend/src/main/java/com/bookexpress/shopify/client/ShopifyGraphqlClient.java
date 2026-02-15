@@ -27,9 +27,6 @@ public class ShopifyGraphqlClient {
         this.accountService = accountService;
     }
 
-    /**
-     * Query product details by Shopify product GID.
-     */
     @SuppressWarnings("unchecked")
     public Map<String, Object> queryProduct(Long accountId, String productId) {
         if (accountId == null) {
@@ -131,7 +128,7 @@ public class ShopifyGraphqlClient {
             """;
 
         Map<String, Object> variables = new HashMap<>();
-        variables.put("id", productId);
+        variables.put("id", normalizeProductId(productId));
 
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("query", query);
@@ -155,12 +152,22 @@ public class ShopifyGraphqlClient {
             throw new BusinessException("Shopify GraphQL response is empty");
         }
 
-        // Surface Shopify GraphQL errors explicitly
         Object errors = body.get("errors");
         if (errors != null) {
             throw new BusinessException("Shopify GraphQL returned errors: " + errors);
         }
 
         return body;
+    }
+
+    private String normalizeProductId(String productId) {
+        String input = productId.trim();
+        if (input.startsWith("gid://shopify/Product/")) {
+            return input;
+        }
+        if (!input.matches("\\d+")) {
+            throw new BusinessException("productId must be numeric (e.g. 8112925769802) or full gid");
+        }
+        return "gid://shopify/Product/" + input;
     }
 }

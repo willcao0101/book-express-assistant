@@ -3,13 +3,63 @@ import { useEffect, useState } from "react";
 import { queryRecords } from "../api/records";
 import { useNavigate } from "react-router-dom";
 
+/**
+ * Convert any product id format to plain numeric id if possible.
+ * Examples:
+ * - gid://shopify/Product/8112925769802 -> 8112925769802
+ * - 8112925769802 -> 8112925769802
+ */
+function toPlainProductId(raw: any): string {
+  if (raw === null || raw === undefined) return "";
+  const text = String(raw).trim();
+  if (!text) return "";
+
+  // Match trailing numeric segment in gid-like format
+  const match = text.match(/\/(\d+)(\?.*)?$/);
+  if (match?.[1]) return match[1];
+
+  // Already numeric string
+  if (/^\d+$/.test(text)) return text;
+
+  return text;
+}
+
+/**
+ * Resolve title from possible field shapes.
+ */
+function resolveTitle(record: any): string {
+  return (
+    record?.title ??
+    record?.productTitle ??
+    record?.name ??
+    record?.productName ??
+    record?.summary?.title ??
+    record?.payload?.title ??
+    record?.product?.title ??
+    "-"
+  );
+}
+
+/**
+ * Resolve list content from multiple backend response shapes.
+ */
+function resolveContent(res: any): any[] {
+  return (
+    res?.data?.content ??
+    res?.data?.data?.content ??
+    res?.data?.records ??
+    res?.records ??
+    []
+  );
+}
+
 export default function RecordsPage() {
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(false);
   const [records, setRecords] = useState<any[]>([]);
 
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(0); // 0-based for backend
   const [size, setSize] = useState(20);
 
   const [recordId, setRecordId] = useState<string>("");
@@ -25,8 +75,8 @@ export default function RecordsPage() {
         title: title ? title.trim() : undefined,
       });
 
-      // Compatible with Spring Page response structure
-      setRecords(res?.data?.content || []);
+      const content = resolveContent(res);
+      setRecords(content);
     } finally {
       setLoading(false);
     }
@@ -53,13 +103,20 @@ export default function RecordsPage() {
             onChange={(e) => setTitle(e.target.value)}
             style={{ width: 260 }}
           />
-          <Button onClick={() => load(0, size)} type="primary">
+          <Button
+            type="primary"
+            onClick={() => {
+              setPage(0);
+              load(0, size);
+            }}
+          >
             Search
           </Button>
           <Button
             onClick={() => {
               setRecordId("");
               setTitle("");
+              setPage(0);
               load(0, size);
             }}
           >
@@ -71,31 +128,67 @@ export default function RecordsPage() {
       <Card title="Local Product Records">
         <Table
           loading={loading}
-          rowKey="id"
+          rowKey={(r) => String(r?.id ?? `${r?.productId ?? "row"}-${r?.createdAt ?? Math.random()}`)}
           dataSource={records}
           pagination={{
+            current: page + 1, // UI is 1-based
             pageSize: size,
             onChange: (p, ps) => {
-              const np = p - 1;
-              setPage(np);
+              const nextPage = p - 1;
+              setPage(nextPage);
               setSize(ps);
-              load(np, ps);
+              load(nextPage, ps);
             },
           }}
           columns={[
-            { title: "ID", dataIndex: "id", width: 90 },
-            { title: "Product ID", dataIndex: "productId" },
-            { title: "Title", dataIndex: "title", width: 240 },
-            { title: "Status", dataIndex: "status", width: 120 },
-            { title: "Message", dataIndex: "message" },
-            { title: "Created At", dataIndex: "createdAt", width: 200 },
+            {
+              title: "ID",
+              dataIndex: "id",
+              width: 90,
+              render: (v: any) => (v ?? "-"),
+            },
+            {
+              title: "Product ID",
+              dataIndex: "productId",
+              width: 180,
+              render: (v: any) => toPlainProductId(v) || "-",
+            },
+            {
+              title: "Title",
+              width: 280,
+              render: (_: any, r: any) => resolveTitle(r),
+            },
+            {
+              title: "Status",
+              dataIndex: "status",
+              width: 120,
+              render: (v: any) => (v ?? "-"),
+            },
+            {
+              title: "Message",
+              dataIndex: "message",
+              render: (v: any) => (v ?? "-"),
+            },
+            {
+              title: "Created At",
+              dataIndex: "createdAt",
+              width: 200,
+              render: (v: any) => (v ?? "-"),
+            },
             {
               title: "Action",
               width: 120,
               render: (_: any, r: any) => (
                 <Button
                   size="small"
-                  onClick={() => navigate(`/detail/${encodeURIComponent(r.productId)}`)}
+                  onClick={() =>
+                    navigate(`/detail/${encodeURIComponent(toPlainProductId(r?.productId))}`, {
+                      state: {
+                        productId: toPlainProductId(r?.productId),
+                        record: r,
+                      },
+                    })
+                  }
                 >
                   Detail
                 </Button>
