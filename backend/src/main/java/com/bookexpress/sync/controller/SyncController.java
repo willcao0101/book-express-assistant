@@ -25,9 +25,11 @@ public class SyncController {
     @GetMapping("/records")
     public ApiResponse<Page<SyncRecordEntity>> records(
             @RequestParam(required = false) Long accountId,
+            @RequestParam(required = false) Long id,
+            @RequestParam(required = false) String title,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
     ) {
-        return ApiResponse.ok(service.list(accountId, page, size));
+        return ApiResponse.ok(service.list(accountId, id, title, page, size));
     }
 }
