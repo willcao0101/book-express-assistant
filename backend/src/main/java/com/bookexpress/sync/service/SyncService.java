@@ -1,5 +1,7 @@
 package com.bookexpress.sync.service;
 
+import com.bookexpress.common.exception.BusinessException;
+import com.bookexpress.shopify.client.ShopifyGraphqlClient;
 import com.bookexpress.sync.dto.CommitRequest;
 import com.bookexpress.sync.entity.SyncRecordEntity;
 import com.bookexpress.sync.repository.SyncRecordRepository;
@@ -15,13 +17,21 @@ public class SyncService {
 
     private final SyncRecordRepository repository;
     private final ValidationService validationService;
+    private final ShopifyGraphqlClient shopifyClient;
 
-    public SyncService(SyncRecordRepository repository, ValidationService validationService) {
+    public SyncService(SyncRecordRepository repository,
+                       ValidationService validationService,
+                       ShopifyGraphqlClient shopifyClient) {
         this.repository = repository;
         this.validationService = validationService;
+        this.shopifyClient = shopifyClient;
     }
 
     public SyncRecordEntity commit(CommitRequest req) {
+        if (req == null) throw new BusinessException("request is required");
+        if (req.getAccountId() == null) throw new BusinessException("accountId is required");
+        if (req.getProductId() == null || req.getProductId().isBlank()) throw new BusinessException("productId is required");
+
         // Always validate on server side before commit
         ValidationResult vr = validationService.validate(req.getUpdatePayload());
 
@@ -29,7 +39,7 @@ public class SyncService {
         record.setAccountId(req.getAccountId());
         record.setProductId(req.getProductId());
 
-        // Added: persist title for records list display
+        // Persist title for records list display (already used by Records page)
         record.setTitle(extractTitle(req.getUpdatePayload()));
 
         if (!vr.isPass()) {
@@ -38,11 +48,17 @@ public class SyncService {
             return repository.save(record);
         }
 
-        // TODO: Call Shopify mutation here.
-        // For now, we store a success record as a skeleton.
-        record.setStatus("SUCCESS");
-        record.setMessage("Committed to Shopify (skeleton).");
-        return repository.save(record);
+        // Commit to Shopify + save local record
+        try {
+            shopifyClient.productUpdate(req.getAccountId(), req.getProductId(), req.getUpdatePayload());
+            record.setStatus("SUCCESS");
+            record.setMessage("Updated Shopify and saved local record.");
+            return repository.save(record);
+        } catch (Exception ex) {
+            record.setStatus("FAILED");
+            record.setMessage("Shopify update failed: " + ex.getMessage());
+            return repository.save(record);
+        }
     }
 
     public Page<SyncRecordEntity> list(Long accountId, Long id, String title, int page, int size) {

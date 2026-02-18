@@ -25,7 +25,7 @@ public class ShopifyService {
         Map<String, Object> data = (Map<String, Object>) raw.get("data");
         Map<String, Object> product = data == null ? null : (Map<String, Object>) data.get("product");
 
-        Map<String, Object> view = buildView(product);
+        Map<String, Object> view = buildView(accountId, product);
 
         Map<String, Object> result = new HashMap<>();
         result.put("raw", raw);
@@ -34,7 +34,7 @@ public class ShopifyService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> buildView(Map<String, Object> product) {
+    private Map<String, Object> buildView(Long accountId, Map<String, Object> product) {
         Map<String, Object> view = new LinkedHashMap<>();
         if (product == null) {
             view.put("summary", Collections.emptyMap());
@@ -58,6 +58,10 @@ public class ShopifyService {
         summary.put("seo", product.get("seo"));
         summary.put("featuredImage", product.get("featuredImage"));
         summary.put("options", product.get("options"));
+
+        // Added: tagsTitle (Smart collection titles where rule is TAG EQUALS <tag>)
+        summary.put("tagsTitle", buildTagsTitle(accountId, product.get("tags")));
+
         view.put("summary", summary);
 
         // images
@@ -82,6 +86,29 @@ public class ShopifyService {
         view.put("metafieldsByNamespace", metafieldsByNamespace);
 
         return view;
+    }
+
+    private String buildTagsTitle(Long accountId, Object tagsObj) {
+        if (accountId == null) return "";
+
+        Set<String> tags = new LinkedHashSet<>();
+        if (tagsObj instanceof List<?> list) {
+            for (Object t : list) {
+                String s = t == null ? "" : String.valueOf(t).trim();
+                if (!s.isBlank()) tags.add(s);
+            }
+        }
+        if (tags.isEmpty()) return "";
+
+        Map<String, Set<String>> mapping = client.querySmartCollectionTagEqualsMappings(accountId);
+        if (mapping == null || mapping.isEmpty()) return "";
+
+        Set<String> titles = new LinkedHashSet<>();
+        for (String tag : tags) {
+            Set<String> ts = mapping.get(tag);
+            if (ts != null) titles.addAll(ts);
+        }
+        return String.join(", ", titles);
     }
 
     @SuppressWarnings("unchecked")
