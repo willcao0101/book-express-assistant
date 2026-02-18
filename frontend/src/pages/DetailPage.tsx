@@ -25,6 +25,7 @@ type SummaryData = {
   vendor?: string;
   productType?: string;
   tags?: string[] | string;
+  tagsTitle?: string;
   descriptionHtml?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -184,6 +185,7 @@ export default function DetailPage() {
       vendor: s.vendor || "",
       productType: s.productType || "",
       tags: Array.isArray(s.tags) ? s.tags : toStringValue(s.tags),
+      tagsTitle: s.tagsTitle || "",
       descriptionHtml: s.descriptionHtml || "",
       createdAt: s.createdAt || "",
       updatedAt: s.updatedAt || "",
@@ -307,6 +309,7 @@ export default function DetailPage() {
     { rowKey: "summary-vendor", field: "vendor", value: editableSummary.vendor, editable: true, error: getSummaryError("vendor"), bindField: "vendor" },
     { rowKey: "summary-productType", field: "productType", value: editableSummary.productType, editable: true, error: getSummaryError("productType"), bindField: "productType" },
     { rowKey: "summary-tags", field: "tags", value: editableSummary.tags, editable: true, error: getSummaryError("tags"), bindField: "tags" },
+    { rowKey: "summary-tagsTitle", field: "tagsTitle", value: toStringValue(summary.tagsTitle), editable: false, error: getSummaryError("tagsTitle"), bindField: "" },
     { rowKey: "summary-descriptionHtml", field: "descriptionHtml", value: editableSummary.descriptionHtml, editable: true, error: getSummaryError("descriptionHtml"), bindField: "descriptionHtml" },
   ];
 
@@ -328,82 +331,48 @@ export default function DetailPage() {
       title: "value",
       dataIndex: "value",
       key: "value",
-      width: COL_2,
-      render: (_: string, row) =>
-        row.editable ? (
-          row.bindField === "descriptionHtml" ? (
-            <Input.TextArea rows={3} value={row.value} onChange={(e) => onEditSummaryValue(row, e.target.value)} />
-          ) : (
-            <Input value={row.value} onChange={(e) => onEditSummaryValue(row, e.target.value)} />
-          )
-        ) : (
-          <Text>{row.value || "-"}</Text>
-        ),
-    },
-    {
-      title: "",
-      dataIndex: "rowKey",
-      key: "spacer1",
-      width: COL_3,
-      render: () => null,
-    },
-    {
-      title: "",
-      dataIndex: "rowKey",
-      key: "spacer2",
-      width: COL_4,
-      render: () => null,
+      width: COL_2 + COL_3 + COL_4,
+      render: (_: any, row: SummaryRow) => {
+        if (!row.editable) {
+          return <Text>{row.value || "-"}</Text>;
+        }
+        return (
+          <Input
+            value={row.value}
+            onChange={(e) => onEditSummaryValue(row, e.target.value)}
+          />
+        );
+      },
     },
     {
       title: "Validation Result",
       dataIndex: "error",
       key: "error",
       width: COL_5,
-      render: (v: string) => (v ? <Text style={{ color: "red" }}>{v}</Text> : null),
+      render: (v: string) => (v ? <Text type="danger">{v}</Text> : <Text type="secondary">-</Text>),
     },
   ];
 
-  const errorForMetafieldRow = (idx: number): string => {
-    const candidates = [
-      `metafields.${idx}.value`,
-      `metafields[${idx}].value`,
-      `metafields.${idx}.namespace`,
-      `metafields[${idx}].namespace`,
-      `metafields.${idx}.key`,
-      `metafields[${idx}].key`,
-      `metafields.${idx}.type`,
-      `metafields[${idx}].type`,
-    ];
-    for (const p of candidates) {
-      if (fieldErrors[p]) return fieldErrors[p];
-    }
-    return "";
-  };
-
-  const metafieldTableData: MetafieldRow[] = useMemo(
-    () =>
-      metafields.map((mf, idx) => ({
-        rowKey: `mf-row-${idx}`,
-        index: idx,
-        namespace: mf.namespace || "",
-        key: mf.key || "",
-        type: mf.type || "",
-        value: metafieldValues[idx] ?? "",
-        error: errorForMetafieldRow(idx),
-      })),
-    [metafields, metafieldValues, fieldErrors]
-  );
+  const metafieldRows: MetafieldRow[] = metafields.map((mf, idx) => ({
+    rowKey: `mf-${idx}`,
+    index: idx,
+    namespace: mf.namespace || "",
+    key: mf.key || "",
+    type: mf.type || "",
+    value: metafieldValues[idx] ?? "",
+    error: fieldErrors[`metafields.${idx}.value`] || fieldErrors[`metafields[${idx}].value`] || "",
+  }));
 
   const metafieldColumns: ColumnsType<MetafieldRow> = [
-    { title: "namespace", dataIndex: "namespace", key: "namespace", width: COL_1, render: (v: string) => <Text>{v || "-"}</Text> },
-    { title: "key", dataIndex: "key", key: "key", width: COL_2, render: (v: string) => <Text>{v || "-"}</Text> },
-    { title: "type", dataIndex: "type", key: "type", width: COL_3, render: (v: string) => <Text>{v || "-"}</Text> },
+    { title: "namespace", dataIndex: "namespace", key: "namespace", width: COL_1, render: (v) => <Text strong>{v}</Text> },
+    { title: "key", dataIndex: "key", key: "key", width: COL_2, render: (v) => <Text>{v}</Text> },
+    { title: "type", dataIndex: "type", key: "type", width: COL_3, render: (v) => <Text>{v}</Text> },
     {
       title: "value",
       dataIndex: "value",
       key: "value",
       width: COL_4,
-      render: (_: string, row) => (
+      render: (_: any, row: MetafieldRow) => (
         <Input value={row.value} onChange={(e) => onChangeMetafieldValue(row.index, e.target.value)} />
       ),
     },
@@ -412,74 +381,66 @@ export default function DetailPage() {
       dataIndex: "error",
       key: "error",
       width: COL_5,
-      render: (v: string) => (v ? <Text style={{ color: "red" }}>{v}</Text> : null),
+      render: (v: string) => (v ? <Text type="danger">{v}</Text> : <Text type="secondary">-</Text>),
     },
   ];
 
   return (
-    <Space direction="vertical" style={{ width: "100%" }} size={16}>
-      <Card title="Detail" loading={loadingDetail}>
-        {!productData ? (
-          <Text type="secondary">No data loaded yet.</Text>
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Card
+        title="Detail"
+        extra={
+          <Space>
+            <Button onClick={onValidate} loading={validating} disabled={loadingDetail}>
+              Validate
+            </Button>
+            <Button type="primary" onClick={onCommit} loading={committing} disabled={loadingDetail}>
+              Commit
+            </Button>
+          </Space>
+        }
+      >
+        {loadingDetail ? (
+          <Text type="secondary">Loading...</Text>
         ) : (
           <>
-            <Card size="small" title="Summary" style={{ marginBottom: 12 }}>
-              <Table<SummaryRow>
-                rowKey="rowKey"
+            {!!validation && (
+              <Alert
+                style={{ marginBottom: 12 }}
+                type={validation?.pass ? "success" : "warning"}
+                message={validation?.pass ? "Validation passed" : "Validation issues found"}
+                description={
+                  <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                    {JSON.stringify(validation, null, 2)}
+                  </pre>
+                }
+              />
+            )}
+
+            <Card
+              title="Summary"
+              style={{ marginBottom: 12 }}
+              bodyStyle={{ padding: 0 }}
+            >
+              <Table
                 columns={summaryColumns}
                 dataSource={summaryTableData}
                 pagination={false}
-                size="small"
-                tableLayout="fixed"
+                size="middle"
                 scroll={{ x: TABLE_X }}
               />
             </Card>
 
-            <Card size="small" title="Metafields">
-              <Table<MetafieldRow>
-                rowKey="rowKey"
+            <Card title="Metafields" bodyStyle={{ padding: 0 }}>
+              <Table
                 columns={metafieldColumns}
-                dataSource={metafieldTableData}
+                dataSource={metafieldRows}
                 pagination={false}
-                size="small"
-                tableLayout="fixed"
+                size="middle"
                 scroll={{ x: TABLE_X }}
-                locale={{ emptyText: "No metafields" }}
               />
             </Card>
-
-            <Space style={{ marginTop: 14 }}>
-              <Button onClick={onValidate} loading={validating}>
-                Validate
-              </Button>
-              <Button type="primary" onClick={onCommit} loading={committing}>
-                Commit
-              </Button>
-            </Space>
           </>
-        )}
-      </Card>
-
-      <Card title="Validation Result">
-        {!validation ? (
-          <Text type="secondary">Click Validate to check current edits.</Text>
-        ) : validation.pass ? (
-          <Alert type="success" message="Validation passed" showIcon />
-        ) : (
-          <Alert
-            type="error"
-            message={`Validation failed (${validation.failed || 0} issues)`}
-            description={
-              <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
-                {(validation.issues || []).map((it: any, idx: number) => (
-                  <li key={idx} style={{ color: "red" }}>
-                    [{it.fieldPath}] {it.message}
-                  </li>
-                ))}
-              </ul>
-            }
-            showIcon
-          />
         )}
       </Card>
     </Space>

@@ -110,6 +110,7 @@ export default function ProductPage() {
             <p><b>Status:</b> {summary.status}</p>
             <p><b>Product Type:</b> {summary.productType || "-"}</p>
             <p><b>Tags:</b> {(summary.tags || []).join(", ") || "-"}</p>
+            <p><b>Tags Title:</b> {summary.tagsTitle || "-"}</p>
             <Button
               type="primary"
               onClick={() =>
