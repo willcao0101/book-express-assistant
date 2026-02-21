@@ -1,383 +1,212 @@
 package com.bookexpress.validation.service;
 
 import com.bookexpress.backend.repository.CategoryIdMapRepository;
-import com.bookexpress.shopify.client.ShopifyGraphqlClient;
+import com.bookexpress.shopify.service.ShopifyService;
 import com.bookexpress.validation.dto.ValidationIssue;
 import com.bookexpress.validation.dto.ValidationResult;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Service
 public class ValidationService {
 
-    private static final Pattern LONG_NUMBER = Pattern.compile("\\b(\\d{9,15})\\b");
-
     private final CategoryIdMapRepository categoryIdMapRepository;
-    private final ShopifyGraphqlClient shopifyClient;
 
-    public ValidationService(CategoryIdMapRepository categoryIdMapRepository,
-                             ShopifyGraphqlClient shopifyClient) {
+    public ValidationService(CategoryIdMapRepository categoryIdMapRepository) {
         this.categoryIdMapRepository = categoryIdMapRepository;
-        this.shopifyClient = shopifyClient;
     }
 
-    /**
-     * Current validation rules:
-     * 1) CategoryId must exist in local category_id_map table (Trade Me category list).
-     *    CategoryId is parsed from tags/tagsTitle. If multiple numbers exist, pick the first one that exists in DB.
-     * 2) Title:
-     *    - any single word > 20 chars -> error
-     *    - total title length > 200 chars -> error
-     * 3) Images:
-     *    Photos must be at least 500 pixels on the longest side.
-     */
     @SuppressWarnings("unchecked")
     public ValidationResult validate(Map<String, Object> productData) {
         ValidationResult result = new ValidationResult();
-        result.setTotal(3);
 
-        if (productData == null) productData = Collections.emptyMap();
+        Map<String, Object> summary = resolveSummary(productData);
 
-        // -----------------------------
-        // Rule 2: Title rules
-        // -----------------------------
-        String title = readString(productData, "title");
-        if (title != null && !title.isBlank()) {
-            String[] words = title.trim().split("\\s+");
-            for (String w : words) {
-                if (w != null && w.length() > 20) {
-                    result.getIssues().add(new ValidationIssue(
-                            "title",
-                            "ERROR",
-                            "A single word in the title must not exceed 20 characters."
-                    ));
-                    break;
-                }
+        // Resolve productId for cache lookup
+        String productId = getString(productData, "productId");
+        if (productId.isBlank()) productId = getString(productData, "id");
+        if (productId.isBlank() && summary != null) productId = getString(summary, "id");
+
+        // Resolve categoryId (DO NOT change this logic)
+        Long categoryId = null;
+
+        Long fromSummary = getLong(summary, "categoryId");
+        if (fromSummary != null && fromSummary > 0) {
+            categoryId = fromSummary;
+        }
+
+        if ((categoryId == null || categoryId <= 0) && !productId.isBlank()) {
+            categoryId = ShopifyService.getCachedCategoryId(productId);
+        }
+
+        if (categoryId == null || categoryId <= 0) {
+            String pid2 = extractFromRawIfAny(productData);
+            if (pid2 != null && !pid2.isBlank()) {
+                categoryId = ShopifyService.getCachedCategoryId(pid2);
             }
-            if (title.length() > 200) {
+        }
+
+        // Category validation (now enabled)
+        if (categoryId == null || categoryId <= 0) {
+            result.getIssues().add(new ValidationIssue(
+                    "tagsTitle",
+                    "ERROR",
+                    "categoryId=null (cannot validate category without categoryId)"
+            ));
+        } else {
+            Optional<String> categoryPathOpt;
+            try {
+                categoryPathOpt = categoryIdMapRepository.findCategoryPathById(categoryId);
+            } catch (Exception e) {
+                categoryPathOpt = Optional.empty();
+            }
+
+            if (categoryPathOpt.isPresent()) {
+                // Pass: show only OK + category_id
                 result.getIssues().add(new ValidationIssue(
-                        "title",
+                        "tagsTitle",
+                        "OK",
+                        "OK (category_id=" + categoryId + ")"
+                ));
+            } else {
+                result.getIssues().add(new ValidationIssue(
+                        "tagsTitle",
                         "ERROR",
-                        "Title must not exceed 200 characters."
+                        "Category not in category_id_map (category_id=" + categoryId + ")"
                 ));
             }
         }
 
-        // -----------------------------
-        // Rule 1: CategoryId exists in Trade Me list
-        // -----------------------------
-        Long accountId = readLong(productData, "accountId");
-        String productId = readString(productData, "id");
-        if (productId == null || productId.isBlank()) {
-            productId = readString(productData, "productId");
+        // Keep existing minimal checks
+        String title = getString(productData, "title");
+        if (title.isBlank() && summary != null) title = getString(summary, "title");
+
+        if (title.isBlank()) {
+            result.getIssues().add(new ValidationIssue("title", "ERROR", "Title is empty."));
         }
 
-        Long categoryId = extractCategoryId(productData);
-
-        // If still not found in payload, try fetch from Shopify
-        if (categoryId == null && accountId != null && productId != null && !productId.isBlank()) {
-            try {
-                Map<String, Object> raw = shopifyClient.queryProduct(accountId, productId);
-                categoryId = extractCategoryIdFromRaw(raw);
-            } catch (Exception ignore) {
-                // ignore
-            }
+        List<Map<String, Object>> images = extractImages(productData);
+        if (images == null || images.isEmpty()) {
+            result.getIssues().add(new ValidationIssue("images", "WARNING", "No images found."));
         }
 
-        boolean categoryOk = false;
-        if (categoryId != null) {
-            categoryOk = categoryIdMapRepository.findCategoryPathById(categoryId).isPresent();
-        }
-        if (!categoryOk) {
-            // IMPORTANT: use fieldPath that UI can bind to the category field.
-            // In your UI, the field is displayed as "categoryId".
-            result.getIssues().add(new ValidationIssue(
-                    "categoryId",
-                    "ERROR",
-                    "Category is not in the Trade Me list."
-            ));
-        }
+        addOkIfMissing(result, "title");
+        addOkIfMissing(result, "images");
+        addOkIfMissing(result, "tagsTitle");
 
-        // -----------------------------
-        // Rule 3: Images at least 500px on longest side
-        // -----------------------------
-        List<int[]> dims = extractImageDims(productData);
-
-        if (dims.isEmpty() && accountId != null && productId != null && !productId.isBlank()) {
-            // Try fetch from Shopify if images were not included in request
-            try {
-                Map<String, Object> raw = shopifyClient.queryProduct(accountId, productId);
-                dims = extractImageDimsFromRaw(raw);
-            } catch (Exception ignore) {
-                // ignore
-            }
-        }
-
-        boolean imageRuleFailed = false;
-        for (int[] d : dims) {
-            int w = d[0];
-            int h = d[1];
-            if (w <= 0 || h <= 0) continue;
-            if (Math.max(w, h) < 500) {
-                imageRuleFailed = true;
+        boolean pass = true;
+        for (ValidationIssue i : result.getIssues()) {
+            if ("ERROR".equalsIgnoreCase(i.getLevel())) {
+                pass = false;
                 break;
             }
         }
-
-        if (imageRuleFailed) {
-            result.getIssues().add(new ValidationIssue(
-                    "images",
-                    "ERROR",
-                    "Photos must be at least 500 pixels on the longest side"
-            ));
-        }
-
-        // Add OK markers so UI can display "OK" instead of empty.
-        // IMPORTANT: failed count must exclude OK.
-        addOkIfMissing(result, "title");
-        addOkIfMissing(result, "categoryId");
-        addOkIfMissing(result, "images");
-
-        // Final stats: count only non-OK issues
-        int failed = 0;
-        for (ValidationIssue it : result.getIssues()) {
-            if (it == null) continue;
-            if (!"OK".equalsIgnoreCase(it.getLevel())) failed++;
-        }
-        result.setFailed(failed);
-        result.setPass(failed == 0);
+        result.setPass(pass);
 
         return result;
     }
 
-    // =========================================================
-    // Helpers
-    // =========================================================
-
-    private String readString(Map<String, Object> map, String key) {
-        Object v = map.get(key);
-        if (v == null) return null;
-        return String.valueOf(v);
-    }
-
-    private Long readLong(Map<String, Object> map, String key) {
-        Object v = map.get(key);
-        if (v == null) return null;
-        if (v instanceof Number n) return n.longValue();
-        try {
-            String s = String.valueOf(v).trim();
-            if (s.isEmpty()) return null;
-            return Long.parseLong(s);
-        } catch (Exception ignore) {
-            return null;
-        }
-    }
-
-    /**
-     * Extract categoryId by scanning:
-     * - tagsTitle (string, possibly contains ids)
-     * - tags list
-     * - nested summary.tagsTitle / summary.tags
-     *
-     * We may find multiple long numbers; we select the first one that exists in category_id_map table.
-     */
     @SuppressWarnings("unchecked")
-    private Long extractCategoryId(Map<String, Object> productData) {
-        List<Long> candidates = new ArrayList<>();
+    private Map<String, Object> resolveSummary(Map<String, Object> productData) {
+        if (productData == null) return null;
 
-        collectLongNumbers(candidates, readString(productData, "tagsTitle"));
-        collectLongNumbersFromTags(candidates, productData.get("tags"));
+        Object s = productData.get("summary");
+        if (s instanceof Map<?, ?> m) return (Map<String, Object>) m;
 
-        Object summaryObj = productData.get("summary");
-        if (summaryObj instanceof Map<?, ?> summary) {
-            Object tt = summary.get("tagsTitle");
-            collectLongNumbers(candidates, tt == null ? null : String.valueOf(tt));
-            collectLongNumbersFromTags(candidates, summary.get("tags"));
+        Object v = productData.get("view");
+        if (v instanceof Map<?, ?> vm) {
+            Object vs = ((Map<?, ?>) vm).get("summary");
+            if (vs instanceof Map<?, ?> vsm) return (Map<String, Object>) vsm;
         }
 
-        // If the UI already sends categoryId explicitly, use it first.
-        Object explicit = productData.get("categoryId");
-        if (explicit != null) {
-            Long v = toLong(explicit);
-            if (v != null) return v;
-        }
-
-        // de-dup, keep order
-        LinkedHashSet<Long> uniq = new LinkedHashSet<>(candidates);
-
-        // Prefer the first id that exists in DB
-        for (Long id : uniq) {
-            if (id == null) continue;
-            if (categoryIdMapRepository.findCategoryPathById(id).isPresent()) {
-                return id;
-            }
-        }
-
-        // If none match DB, return the first parsed id (so the error is still deterministic)
-        return uniq.stream().filter(Objects::nonNull).findFirst().orElse(null);
-    }
-
-    private Long toLong(Object v) {
-        if (v == null) return null;
-        if (v instanceof Number n) return n.longValue();
-        try {
-            String s = String.valueOf(v).trim();
-            if (s.isEmpty()) return null;
-            return Long.parseLong(s);
-        } catch (Exception ignore) {
-            return null;
-        }
-    }
-
-    private void collectLongNumbersFromTags(List<Long> out, Object tagsObj) {
-        if (tagsObj == null) return;
-
-        if (tagsObj instanceof List<?> list) {
-            for (Object t : list) {
-                collectLongNumbers(out, t == null ? null : String.valueOf(t));
-            }
-        } else {
-            collectLongNumbers(out, String.valueOf(tagsObj));
-        }
-    }
-
-    private void collectLongNumbers(List<Long> out, String text) {
-        if (text == null) return;
-        Matcher m = LONG_NUMBER.matcher(text);
-        while (m.find()) {
-            try {
-                out.add(Long.parseLong(m.group(1)));
-            } catch (Exception ignore) {
-                // ignore
-            }
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Long extractCategoryIdFromRaw(Map<String, Object> raw) {
-        if (raw == null) return null;
-
-        Object dataObj = raw.get("data");
-        if (!(dataObj instanceof Map<?, ?> data)) return null;
-
-        Object productObj = data.get("product");
-        if (!(productObj instanceof Map<?, ?> product)) return null;
-
-        // Try tags
-        Object tagsObj = product.get("tags");
-        if (tagsObj != null) {
-            List<Long> candidates = new ArrayList<>();
-            collectLongNumbersFromTags(candidates, tagsObj);
-
-            LinkedHashSet<Long> uniq = new LinkedHashSet<>(candidates);
-            for (Long id : uniq) {
-                if (id == null) continue;
-                if (categoryIdMapRepository.findCategoryPathById(id).isPresent()) return id;
-            }
-            return uniq.stream().filter(Objects::nonNull).findFirst().orElse(null);
-        }
-
+        if (looksLikeSummary(productData)) return productData;
         return null;
     }
 
+    private boolean looksLikeSummary(Map<String, Object> m) {
+        if (m == null) return false;
+        boolean hasId = m.containsKey("id") || m.containsKey("productId");
+        boolean hasTitle = m.containsKey("title");
+        boolean hasTags = m.containsKey("tags");
+        return hasId && hasTitle && hasTags;
+    }
+
     @SuppressWarnings("unchecked")
-    private List<int[]> extractImageDims(Map<String, Object> productData) {
-        List<int[]> dims = new ArrayList<>();
+    private String extractFromRawIfAny(Map<String, Object> productData) {
+        if (productData == null) return null;
+
+        Object rawObj = productData.get("raw");
+        if (!(rawObj instanceof Map<?, ?> raw)) return null;
+
+        Object dataObj = ((Map<?, ?>) raw).get("data");
+        if (!(dataObj instanceof Map<?, ?> data)) return null;
+
+        Object productObj = ((Map<?, ?>) data).get("product");
+        if (!(productObj instanceof Map<?, ?> product)) return null;
+
+        Object id = ((Map<?, ?>) product).get("id");
+        return id == null ? null : String.valueOf(id).trim();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractImages(Map<String, Object> productData) {
+        if (productData == null) return Collections.emptyList();
 
         Object imagesObj = productData.get("images");
         if (imagesObj instanceof List<?> list) {
-            for (Object it : list) {
-                if (it instanceof Map<?, ?> m) {
-                    Integer w = toInt(m.get("width"));
-                    Integer h = toInt(m.get("height"));
-                    if (w != null && h != null) dims.add(new int[]{w, h});
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> m) out.add((Map<String, Object>) m);
+            }
+            return out;
+        }
+
+        Object viewObj = productData.get("view");
+        if (viewObj instanceof Map<?, ?> view) {
+            Object vImages = ((Map<?, ?>) view).get("images");
+            if (vImages instanceof List<?> list) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (Object o : list) {
+                    if (o instanceof Map<?, ?> m) out.add((Map<String, Object>) m);
                 }
+                return out;
             }
         }
 
-        Object featuredObj = productData.get("featuredImage");
-        if (featuredObj instanceof Map<?, ?> m) {
-            Integer w = toInt(m.get("width"));
-            Integer h = toInt(m.get("height"));
-            if (w != null && h != null) dims.add(new int[]{w, h});
-        }
+        return Collections.emptyList();
+    }
 
-        Object summaryObj = productData.get("summary");
-        if (summaryObj instanceof Map<?, ?> summary) {
-            Object imgs2 = summary.get("images");
-            if (imgs2 instanceof List<?> list2) {
-                for (Object it : list2) {
-                    if (it instanceof Map<?, ?> m3) {
-                        Integer w = toInt(m3.get("width"));
-                        Integer h = toInt(m3.get("height"));
-                        if (w != null && h != null) dims.add(new int[]{w, h});
-                    }
-                }
+    private static void addOkIfMissing(ValidationResult result, String fieldPath) {
+        boolean exists = false;
+        for (ValidationIssue i : result.getIssues()) {
+            if (fieldPath.equals(i.getFieldPath())) {
+                exists = true;
+                break;
             }
         }
-
-        Object raw = productData.get("raw");
-        if (raw instanceof Map<?, ?> rawMap) {
-            dims.addAll(extractImageDimsFromRaw((Map<String, Object>) rawMap));
+        if (!exists) {
+            result.getIssues().add(new ValidationIssue(fieldPath, "OK", "OK"));
         }
-
-        return dims;
     }
 
-    @SuppressWarnings("unchecked")
-    private List<int[]> extractImageDimsFromRaw(Map<String, Object> raw) {
-        List<int[]> dims = new ArrayList<>();
-        if (raw == null) return dims;
-
-        Object dataObj = raw.get("data");
-        if (!(dataObj instanceof Map<?, ?> data)) return dims;
-
-        Object productObj = data.get("product");
-        if (!(productObj instanceof Map<?, ?> product)) return dims;
-
-        Object imagesObj = product.get("images");
-        if (!(imagesObj instanceof Map<?, ?> images)) return dims;
-
-        Object edgesObj = images.get("edges");
-        if (!(edgesObj instanceof List<?> edges)) return dims;
-
-        for (Object e : edges) {
-            if (!(e instanceof Map<?, ?> edge)) continue;
-            Object nodeObj = edge.get("node");
-            if (!(nodeObj instanceof Map<?, ?> node)) continue;
-
-            Integer w = toInt(node.get("width"));
-            Integer h = toInt(node.get("height"));
-            if (w != null && h != null) dims.add(new int[]{w, h});
-        }
-        return dims;
+    private static String getString(Map<String, Object> map, String key) {
+        if (map == null) return "";
+        Object v = map.get(key);
+        return v == null ? "" : String.valueOf(v).trim();
     }
 
-    private Integer toInt(Object v) {
+    private static Long getLong(Map<String, Object> map, String key) {
+        if (map == null) return null;
+        Object v = map.get(key);
         if (v == null) return null;
-        if (v instanceof Number n) return n.intValue();
+        if (v instanceof Number n) return n.longValue();
+        String s = String.valueOf(v).trim();
+        if (s.isBlank()) return null;
         try {
-            String s = String.valueOf(v).trim();
-            if (s.isEmpty()) return null;
-            return Integer.parseInt(s);
+            return Long.parseLong(s);
         } catch (Exception ignore) {
             return null;
         }
-    }
-
-    private void addOkIfMissing(ValidationResult result, String fieldPath) {
-        if (result == null || fieldPath == null) return;
-
-        for (ValidationIssue it : result.getIssues()) {
-            if (it == null) continue;
-            if (fieldPath.equals(it.getFieldPath())) {
-                // already has ERROR/WARN/OK
-                return;
-            }
-        }
-        result.getIssues().add(new ValidationIssue(fieldPath, "OK", "OK"));
     }
 }

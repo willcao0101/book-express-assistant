@@ -14,7 +14,6 @@ public class SyncRecordEntity {
     private Long accountId;
     private String productId;
 
-    // Added: book/product title for records page display
     @Column(length = 500)
     private String title;
 
@@ -22,6 +21,14 @@ public class SyncRecordEntity {
 
     @Column(length = 2000)
     private String message;
+
+    @Lob
+    @Column(columnDefinition = "TEXT")
+    private String payloadJson;
+
+    @Lob
+    @Column(columnDefinition = "TEXT")
+    private String shopifyResultJson;
 
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -42,6 +49,12 @@ public class SyncRecordEntity {
 
     public String getMessage() { return message; }
     public void setMessage(String message) { this.message = message; }
+
+    public String getPayloadJson() { return payloadJson; }
+    public void setPayloadJson(String payloadJson) { this.payloadJson = payloadJson; }
+
+    public String getShopifyResultJson() { return shopifyResultJson; }
+    public void setShopifyResultJson(String shopifyResultJson) { this.shopifyResultJson = shopifyResultJson; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

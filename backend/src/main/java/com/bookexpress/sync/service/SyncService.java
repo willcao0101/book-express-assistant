@@ -1,5 +1,6 @@
 package com.bookexpress.sync.service;
 
+import com.bookexpress.backend.util.JsonUtil;
 import com.bookexpress.common.exception.BusinessException;
 import com.bookexpress.shopify.client.ShopifyGraphqlClient;
 import com.bookexpress.sync.dto.CommitRequest;
@@ -18,13 +19,16 @@ public class SyncService {
     private final SyncRecordRepository repository;
     private final ValidationService validationService;
     private final ShopifyGraphqlClient shopifyClient;
+    private final JsonUtil jsonUtil;
 
     public SyncService(SyncRecordRepository repository,
                        ValidationService validationService,
-                       ShopifyGraphqlClient shopifyClient) {
+                       ShopifyGraphqlClient shopifyClient,
+                       JsonUtil jsonUtil) {
         this.repository = repository;
         this.validationService = validationService;
         this.shopifyClient = shopifyClient;
+        this.jsonUtil = jsonUtil;
     }
 
     public SyncRecordEntity commit(CommitRequest req) {
@@ -32,15 +36,17 @@ public class SyncService {
         if (req.getAccountId() == null) throw new BusinessException("accountId is required");
         if (req.getProductId() == null || req.getProductId().isBlank()) throw new BusinessException("productId is required");
 
-        // Always validate on server side before commit
-        ValidationResult vr = validationService.validate(req.getUpdatePayload());
+        Map<String, Object> payload = req.getUpdatePayload();
 
+        // 1) Validate before commit
+        ValidationResult vr = validationService.validate(payload);
+
+        // 2) Always save local record (requirement a)
         SyncRecordEntity record = new SyncRecordEntity();
         record.setAccountId(req.getAccountId());
         record.setProductId(req.getProductId());
-
-        // Persist title for records list display (already used by Records page)
-        record.setTitle(extractTitle(req.getUpdatePayload()));
+        record.setTitle(extractTitle(payload));
+        record.setPayloadJson(jsonUtil.toJson(payload));
 
         if (!vr.isPass()) {
             record.setStatus("FAILED");
@@ -48,15 +54,17 @@ public class SyncService {
             return repository.save(record);
         }
 
-        // Commit to Shopify + save local record
+        // 3) Update Shopify + update local record (requirement b)
         try {
-            shopifyClient.productUpdate(req.getAccountId(), req.getProductId(), req.getUpdatePayload());
+            Map<String, Object> resp = shopifyClient.productUpdate(req.getAccountId(), req.getProductId(), payload);
+            record.setShopifyResultJson(jsonUtil.toJson(resp));
             record.setStatus("SUCCESS");
             record.setMessage("Updated Shopify and saved local record.");
             return repository.save(record);
         } catch (Exception ex) {
             record.setStatus("FAILED");
             record.setMessage("Shopify update failed: " + ex.getMessage());
+            record.setShopifyResultJson(jsonUtil.toJson(Map.of("error", ex.getMessage())));
             return repository.save(record);
         }
     }
@@ -64,7 +72,6 @@ public class SyncService {
     public Page<SyncRecordEntity> list(Long accountId, Long id, String title, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
 
-        // id has highest priority
         if (id != null) {
             return repository.findById(id, pageable);
         }
@@ -90,13 +97,11 @@ public class SyncService {
     private String extractTitle(Map<String, Object> payload) {
         if (payload == null) return null;
 
-        // Common shape in your frontend update payload: { title: "..." }
         Object t = payload.get("title");
         if (t != null && !String.valueOf(t).trim().isEmpty()) {
             return String.valueOf(t).trim();
         }
 
-        // Fallback: summary.title if exists
         Object summaryObj = payload.get("summary");
         if (summaryObj instanceof Map<?, ?> summaryMap) {
             Object st = ((Map<String, Object>) summaryMap).get("title");
