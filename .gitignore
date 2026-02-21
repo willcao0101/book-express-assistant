@@ -20,3 +20,6 @@ backend/data/
 
 # Logs
 *.log
+
+# Java build artifacts
+*.class

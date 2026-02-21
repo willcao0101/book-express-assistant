@@ -11,6 +11,8 @@ import java.util.*;
 @Service
 public class ValidationService {
 
+    private static final int MIN_LONGEST_SIDE = 500;
+
     private final CategoryIdMapRepository categoryIdMapRepository;
 
     public ValidationService(CategoryIdMapRepository categoryIdMapRepository) {
@@ -23,12 +25,10 @@ public class ValidationService {
 
         Map<String, Object> summary = resolveSummary(productData);
 
-        // Resolve productId for cache lookup
         String productId = getString(productData, "productId");
         if (productId.isBlank()) productId = getString(productData, "id");
         if (productId.isBlank() && summary != null) productId = getString(summary, "id");
 
-        // Resolve categoryId (DO NOT change this logic)
         Long categoryId = null;
 
         Long fromSummary = getLong(summary, "categoryId");
@@ -47,7 +47,6 @@ public class ValidationService {
             }
         }
 
-        // Category validation (now enabled)
         if (categoryId == null || categoryId <= 0) {
             result.getIssues().add(new ValidationIssue(
                     "tagsTitle",
@@ -62,8 +61,7 @@ public class ValidationService {
                 categoryPathOpt = Optional.empty();
             }
 
-            if (categoryPathOpt.isPresent()) {
-                // Pass: show only OK + category_id
+            if (categoryPathOpt.isPresent() && !categoryPathOpt.get().isBlank()) {
                 result.getIssues().add(new ValidationIssue(
                         "tagsTitle",
                         "OK",
@@ -78,7 +76,37 @@ public class ValidationService {
             }
         }
 
-        // Keep existing minimal checks
+        // Media validation (new)
+        String mediaText = summary == null ? "" : getString(summary, "media");
+        Integer minLongestSide = summary == null ? null : getInt(summary.get("mediaMinLongestSide"));
+
+        if ((minLongestSide == null || minLongestSide <= 0) && !productId.isBlank()) {
+            Integer cachedMin = ShopifyService.getCachedMediaMinLongestSide(productId);
+            if (cachedMin != null) minLongestSide = cachedMin;
+
+            String cachedText = ShopifyService.getCachedMedia(productId);
+            if ((mediaText == null || mediaText.isBlank()) && cachedText != null) {
+                mediaText = cachedText;
+            }
+        }
+
+        if (minLongestSide == null) {
+            result.getIssues().add(new ValidationIssue("media", "WARNING", "No images found."));
+        } else if (minLongestSide < MIN_LONGEST_SIDE) {
+            result.getIssues().add(new ValidationIssue(
+                    "media",
+                    "ERROR",
+                    "Photos must be at least 500 pixels on the longest side. Found minLongestSide=" + minLongestSide +
+                            (mediaText == null || mediaText.isBlank() ? "" : " (" + mediaText + ")")
+            ));
+        } else {
+            result.getIssues().add(new ValidationIssue(
+                    "media",
+                    "OK",
+                    "OK (minLongestSide=" + minLongestSide + ")"
+            ));
+        }
+
         String title = getString(productData, "title");
         if (title.isBlank() && summary != null) title = getString(summary, "title");
 
@@ -94,6 +122,7 @@ public class ValidationService {
         addOkIfMissing(result, "title");
         addOkIfMissing(result, "images");
         addOkIfMissing(result, "tagsTitle");
+        addOkIfMissing(result, "media");
 
         boolean pass = true;
         for (ValidationIssue i : result.getIssues()) {
@@ -106,6 +135,8 @@ public class ValidationService {
 
         return result;
     }
+
+    // ---------------- helpers ----------------
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> resolveSummary(Map<String, Object> productData) {
@@ -205,6 +236,18 @@ public class ValidationService {
         if (s.isBlank()) return null;
         try {
             return Long.parseLong(s);
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    private static Integer getInt(Object v) {
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        String s = String.valueOf(v).trim();
+        if (s.isBlank()) return null;
+        try {
+            return Integer.parseInt(s);
         } catch (Exception ignore) {
             return null;
         }

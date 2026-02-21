@@ -101,6 +101,24 @@ public class ShopifyGraphqlClient {
                   }
                 }
 
+                media(first: 20) {
+                  edges {
+                    node {
+                      __typename
+                      id
+                      ... on MediaImage {
+                        image {
+                          id
+                          url
+                          altText
+                          width
+                          height
+                        }
+                      }
+                    }
+                  }
+                }
+
                 options {
                   id
                   name
@@ -153,8 +171,8 @@ public class ShopifyGraphqlClient {
     }
 
     /**
-     * Keeps SyncService compilation working.
-     * This method performs Shopify productUpdate mutation.
+     * Returns the GraphQL response so callers (SyncService) can persist it.
+     * Keeps existing behavior: throws when userErrors is not empty.
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> productUpdate(Long accountId, String productId, Map<String, Object> updatePayload) {
@@ -162,59 +180,26 @@ public class ShopifyGraphqlClient {
         if (productId == null || productId.isBlank()) throw new BusinessException("productId is required");
 
         String gql = """
-        mutation ProductUpdate($product: ProductUpdateInput!) {
-          productUpdate(product: $product) {
-            product { id title handle updatedAt }
-            userErrors { field message }
-          }
-        }
-        """;
+            mutation ProductUpdate($input: ProductInput!) {
+              productUpdate(input: $input) {
+                product { id title }
+                userErrors { field message }
+              }
+            }
+            """;
 
-        Map<String, Object> product = new LinkedHashMap<>();
-        product.put("id", normalizeProductGid(productId));
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("id", normalizeProductGid(productId));
 
-        Map<String, Object> summary = null;
         if (updatePayload != null) {
-            Object s = updatePayload.get("summary");
-            if (s instanceof Map<?, ?> m) summary = (Map<String, Object>) m;
-        }
-
-        // Prefer top-level, fallback to summary
-        putIfPresent(product, "title", pick(updatePayload, summary, "title"));
-        putIfPresent(product, "handle", pick(updatePayload, summary, "handle"));
-        putIfPresent(product, "vendor", pick(updatePayload, summary, "vendor"));
-        putIfPresent(product, "productType", pick(updatePayload, summary, "productType"));
-        putIfPresent(product, "status", pick(updatePayload, summary, "status"));
-        putIfPresent(product, "descriptionHtml", pick(updatePayload, summary, "descriptionHtml"));
-
-        // tags: must be [String]
-        Object tagsObj = pickObj(updatePayload, summary, "tags");
-        List<String> tags = toStringList(tagsObj);
-        if (!tags.isEmpty()) {
-            product.put("tags", tags);
-        }
-
-        // seo: { title, description }
-        Object seoObj = pickObj(updatePayload, summary, "seo");
-        if (seoObj instanceof Map<?, ?> seoMap) {
-            Map<String, Object> seo = new LinkedHashMap<>();
-            Object seoTitle = seoMap.get("title");
-            Object seoDesc = seoMap.get("description");
-            if (seoTitle != null && !String.valueOf(seoTitle).trim().isBlank()) seo.put("title", String.valueOf(seoTitle).trim());
-            if (seoDesc != null && !String.valueOf(seoDesc).trim().isBlank()) seo.put("description", String.valueOf(seoDesc).trim());
-            if (!seo.isEmpty()) product.put("seo", seo);
-        }
-
-        // metafields: [{ namespace, key, value, type }] (doc example)
-        // Frontend likely sends "metafields" as list of nodes
-        Object metafieldsObj = updatePayload == null ? null : updatePayload.get("metafields");
-        List<Map<String, Object>> metafields = toMetafieldInputs(metafieldsObj);
-        if (!metafields.isEmpty()) {
-            product.put("metafields", metafields);
+            for (Map.Entry<String, Object> e : updatePayload.entrySet()) {
+                if (e.getKey() == null) continue;
+                input.put(e.getKey(), e.getValue());
+            }
         }
 
         Map<String, Object> variables = new LinkedHashMap<>();
-        variables.put("product", product);
+        variables.put("input", input);
 
         Map<String, Object> resp = postGraphql(accountId, gql, variables);
 
@@ -228,58 +213,6 @@ public class ShopifyGraphqlClient {
         }
 
         return resp;
-    }
-
-    private static void putIfPresent(Map<String, Object> target, String key, String value) {
-        if (value != null && !value.isBlank()) target.put(key, value);
-    }
-
-    private static String pick(Map<String, Object> payload, Map<String, Object> summary, String key) {
-        String v = payload == null ? "" : String.valueOf(payload.getOrDefault(key, "")).trim();
-        if (!v.isBlank()) return v;
-        if (summary == null) return "";
-        return String.valueOf(summary.getOrDefault(key, "")).trim();
-    }
-
-    private static Object pickObj(Map<String, Object> payload, Map<String, Object> summary, String key) {
-        if (payload != null && payload.containsKey(key)) return payload.get(key);
-        return summary == null ? null : summary.get(key);
-    }
-
-    private static List<String> toStringList(Object obj) {
-        if (!(obj instanceof List<?> list)) return Collections.emptyList();
-        List<String> out = new ArrayList<>();
-        for (Object o : list) {
-            String s = o == null ? "" : String.valueOf(o).trim();
-            if (!s.isBlank()) out.add(s);
-        }
-        return out;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> toMetafieldInputs(Object metafieldsObj) {
-        if (!(metafieldsObj instanceof List<?> list)) return Collections.emptyList();
-
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (Object o : list) {
-            if (!(o instanceof Map<?, ?> m)) continue;
-
-            String namespace = m.get("namespace") == null ? "" : String.valueOf(m.get("namespace")).trim();
-            String key = m.get("key") == null ? "" : String.valueOf(m.get("key")).trim();
-            String value = m.get("value") == null ? "" : String.valueOf(m.get("value")).trim();
-            String type = m.get("type") == null ? "" : String.valueOf(m.get("type")).trim();
-
-            if (namespace.isBlank() || key.isBlank() || type.isBlank()) continue;
-
-            Map<String, Object> one = new LinkedHashMap<>();
-            one.put("namespace", namespace);
-            one.put("key", key);
-            one.put("value", value);
-            one.put("type", type);
-
-            out.add(one);
-        }
-        return out;
     }
 
     public Map<String, Set<String>> querySmartCollectionTagEqualsMappings(Long accountId) {

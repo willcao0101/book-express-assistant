@@ -12,10 +12,11 @@ public class ShopifyService {
 
     private final ShopifyGraphqlClient client;
 
-    // Cache by product gid OR numeric product id string.
-    // Purpose: allow Validation to display categoryId even if the validate request does not include collections/raw.
     private static final Map<String, Long> CATEGORY_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
     private static final Map<String, String> TAGS_TITLE_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
+
+    private static final Map<String, String> MEDIA_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
+    private static final Map<String, Integer> MEDIA_MIN_LONGEST_SIDE_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
 
     public ShopifyService(ShopifyGraphqlClient client) {
         this.client = client;
@@ -31,22 +32,41 @@ public class ShopifyService {
         return TAGS_TITLE_CACHE_BY_PRODUCT_ID.get(productIdOrGid.trim());
     }
 
-    private static void cache(String productIdOrGid, long categoryId, String tagsTitle) {
+    public static String getCachedMedia(String productIdOrGid) {
+        if (productIdOrGid == null || productIdOrGid.isBlank()) return null;
+        return MEDIA_CACHE_BY_PRODUCT_ID.get(productIdOrGid.trim());
+    }
+
+    public static Integer getCachedMediaMinLongestSide(String productIdOrGid) {
+        if (productIdOrGid == null || productIdOrGid.isBlank()) return null;
+        return MEDIA_MIN_LONGEST_SIDE_CACHE_BY_PRODUCT_ID.get(productIdOrGid.trim());
+    }
+
+    private static void cacheCategoryAndTagsTitle(String productIdOrGid, long categoryId, String tagsTitle) {
         if (productIdOrGid == null || productIdOrGid.isBlank()) return;
         String key = productIdOrGid.trim();
 
-        if (categoryId > 0) {
-            CATEGORY_CACHE_BY_PRODUCT_ID.put(key, categoryId);
-        }
-        if (tagsTitle != null && !tagsTitle.isBlank()) {
-            TAGS_TITLE_CACHE_BY_PRODUCT_ID.put(key, tagsTitle);
-        }
+        if (categoryId > 0) CATEGORY_CACHE_BY_PRODUCT_ID.put(key, categoryId);
+        if (tagsTitle != null && !tagsTitle.isBlank()) TAGS_TITLE_CACHE_BY_PRODUCT_ID.put(key, tagsTitle);
 
-        // Also cache by numeric form if the key is gid://shopify/Product/xxxx
         String numeric = extractNumericProductId(key);
         if (numeric != null) {
             if (categoryId > 0) CATEGORY_CACHE_BY_PRODUCT_ID.put(numeric, categoryId);
             if (tagsTitle != null && !tagsTitle.isBlank()) TAGS_TITLE_CACHE_BY_PRODUCT_ID.put(numeric, tagsTitle);
+        }
+    }
+
+    private static void cacheMedia(String productIdOrGid, String mediaText, Integer minLongestSide) {
+        if (productIdOrGid == null || productIdOrGid.isBlank()) return;
+        String key = productIdOrGid.trim();
+
+        if (mediaText != null && !mediaText.isBlank()) MEDIA_CACHE_BY_PRODUCT_ID.put(key, mediaText);
+        if (minLongestSide != null) MEDIA_MIN_LONGEST_SIDE_CACHE_BY_PRODUCT_ID.put(key, minLongestSide);
+
+        String numeric = extractNumericProductId(key);
+        if (numeric != null) {
+            if (mediaText != null && !mediaText.isBlank()) MEDIA_CACHE_BY_PRODUCT_ID.put(numeric, mediaText);
+            if (minLongestSide != null) MEDIA_MIN_LONGEST_SIDE_CACHE_BY_PRODUCT_ID.put(numeric, minLongestSide);
         }
     }
 
@@ -71,14 +91,19 @@ public class ShopifyService {
         result.put("raw", raw);
         result.put("view", view);
 
-        // Cache the computed categoryId so validation can display it later.
         Map<String, Object> summary = (Map<String, Object>) view.get("summary");
         if (summary != null) {
             String pid = summary.get("id") == null ? null : String.valueOf(summary.get("id")).trim();
             Long cat = summary.get("categoryId") instanceof Number n ? n.longValue() : null;
             String tagsTitle = summary.get("tagsTitle") == null ? null : String.valueOf(summary.get("tagsTitle")).trim();
+            String mediaText = summary.get("media") == null ? null : String.valueOf(summary.get("media")).trim();
+            Integer minLongestSide = summary.get("mediaMinLongestSide") instanceof Number n ? n.intValue() : null;
+
             if (pid != null && cat != null) {
-                cache(pid, cat, tagsTitle);
+                cacheCategoryAndTagsTitle(pid, cat, tagsTitle);
+            }
+            if (pid != null) {
+                cacheMedia(pid, mediaText, minLongestSide);
             }
         }
 
@@ -115,13 +140,18 @@ public class ShopifyService {
         summary.put("tagsTitle", tt.tagsTitle());
         summary.put("categoryId", tt.categoryId());
 
-        // Log for debugging (search step)
+        MediaSummary mediaSummary = buildMediaSummary(product);
+        summary.put("media", mediaSummary.text());
+        summary.put("mediaMinLongestSide", mediaSummary.minLongestSide());
+
         System.out.println("========== Concise Summary ==========");
         System.out.println("productId  : " + String.valueOf(summary.get("id")));
         System.out.println("title      : " + String.valueOf(summary.get("title")));
         System.out.println("tags       : " + String.valueOf(summary.get("tags")));
         System.out.println("tagsTitle  : " + tt.tagsTitle());
         System.out.println("categoryId : " + tt.categoryId());
+        System.out.println("media      : " + mediaSummary.text());
+        System.out.println("minSide    : " + mediaSummary.minLongestSide());
 
         view.put("summary", summary);
 
@@ -142,11 +172,85 @@ public class ShopifyService {
                 ));
         view.put("metafieldsByNamespace", metafieldsByNamespace);
 
-        // Cache for validation usage
         String pid = summary.get("id") == null ? null : String.valueOf(summary.get("id")).trim();
-        cache(pid, tt.categoryId(), tt.tagsTitle());
+        cacheCategoryAndTagsTitle(pid, tt.categoryId(), tt.tagsTitle());
+        cacheMedia(pid, mediaSummary.text(), mediaSummary.minLongestSide());
 
         return view;
+    }
+
+    private MediaSummary buildMediaSummary(Map<String, Object> product) {
+        List<int[]> sizes = new ArrayList<>();
+
+        Object featured = product.get("featuredImage");
+        if (featured instanceof Map<?, ?> m) {
+            Integer w = toInt(((Map<?, ?>) m).get("width"));
+            Integer h = toInt(((Map<?, ?>) m).get("height"));
+            if (w != null && h != null && w > 0 && h > 0) sizes.add(new int[]{w, h});
+        }
+
+        List<Map<String, Object>> images = flattenEdges(product, "images");
+        for (Map<String, Object> img : images) {
+            Integer w = toInt(img.get("width"));
+            Integer h = toInt(img.get("height"));
+            if (w != null && h != null && w > 0 && h > 0) sizes.add(new int[]{w, h});
+        }
+
+        List<int[]> mediaSizes = extractMediaImageSizes(product.get("media"));
+        sizes.addAll(mediaSizes);
+
+        if (sizes.isEmpty()) return new MediaSummary("", null);
+
+        StringBuilder sb = new StringBuilder();
+        int idx = 1;
+        for (int[] wh : sizes) {
+            if (idx > 1) sb.append("; ");
+            sb.append(idx).append(") ").append(wh[0]).append("x").append(wh[1]);
+            idx++;
+        }
+
+        Integer minLongest = null;
+        for (int[] wh : sizes) {
+            int longest = Math.max(wh[0], wh[1]);
+            if (minLongest == null || longest < minLongest) minLongest = longest;
+        }
+
+        return new MediaSummary(sb.toString(), minLongest);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<int[]> extractMediaImageSizes(Object mediaObj) {
+        if (!(mediaObj instanceof Map<?, ?> media)) return Collections.emptyList();
+        Object edgesObj = media.get("edges");
+        if (!(edgesObj instanceof List<?> edges)) return Collections.emptyList();
+
+        List<int[]> out = new ArrayList<>();
+        for (Object edgeObj : edges) {
+            if (!(edgeObj instanceof Map<?, ?> edge)) continue;
+            Object nodeObj = edge.get("node");
+            if (!(nodeObj instanceof Map<?, ?> node)) continue;
+
+            Object imageObj = node.get("image");
+            if (!(imageObj instanceof Map<?, ?> image)) continue;
+
+            Integer w = toInt(image.get("width"));
+            Integer h = toInt(image.get("height"));
+            if (w != null && h != null && w > 0 && h > 0) out.add(new int[]{w, h});
+        }
+
+        return out;
+    }
+
+    private Integer toInt(Object v) {
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        String s = String.valueOf(v).trim();
+        if (s.isBlank()) return null;
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception ignore) {
+            return null;
+        }
     }
 
     private TagsTitleAndCategoryId extractFromCollections(Object tagsObj, Object collectionsObj) {
@@ -258,4 +362,5 @@ public class ShopifyService {
     }
 
     private record TagsTitleAndCategoryId(String tagsTitle, long categoryId) {}
+    private record MediaSummary(String text, Integer minLongestSide) {}
 }
