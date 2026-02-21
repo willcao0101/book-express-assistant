@@ -5,13 +5,6 @@ import org.springframework.stereotype.Repository;
 
 import java.util.*;
 
-/**
- * Category ID <-> Category Path mapping repository.
- *
- * Data is treated as "static reference data":
- * - seeded once when DB is created / app starts for the first time
- * - afterwards used for query only (no updates in UI for now)
- */
 @Repository
 public class CategoryIdMapRepository {
 
@@ -22,7 +15,6 @@ public class CategoryIdMapRepository {
     }
 
     public void ensureTable() {
-        // SQLite compatible DDL
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS category_id_map (
                 category_id INTEGER PRIMARY KEY,
@@ -31,6 +23,26 @@ public class CategoryIdMapRepository {
         """);
 
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_category_id_map_path ON category_id_map(category_path);");
+
+        ensureColumnExists("category_id_map", "tags", "TEXT");
+    }
+
+    public Optional<String> findTagsById(long categoryId) {
+        List<String> list = jdbc.query(
+                "SELECT tags FROM category_id_map WHERE category_id = ?",
+                (rs, rowNum) -> rs.getString(1),
+                categoryId
+        );
+        return list.isEmpty() ? Optional.empty() : Optional.ofNullable(list.get(0));
+    }
+
+    public Optional<String> findCategoryPathById(long categoryId) {
+        List<String> list = jdbc.query(
+                "SELECT category_path FROM category_id_map WHERE category_id = ?",
+                (rs, rowNum) -> rs.getString(1),
+                categoryId
+        );
+        return list.isEmpty() ? Optional.empty() : Optional.ofNullable(list.get(0));
     }
 
     public long count() {
@@ -38,9 +50,6 @@ public class CategoryIdMapRepository {
         return c == null ? 0L : c;
     }
 
-    /**
-     * Insert rows in batch. Duplicates will be ignored (INSERT OR IGNORE).
-     */
     public void batchInsertIgnore(List<Row> rows) {
         if (rows == null || rows.isEmpty()) return;
 
@@ -55,18 +64,6 @@ public class CategoryIdMapRepository {
         );
     }
 
-    public Optional<String> findCategoryPathById(long categoryId) {
-        List<String> list = jdbc.query(
-                "SELECT category_path FROM category_id_map WHERE category_id = ?",
-                (rs, rowNum) -> rs.getString(1),
-                categoryId
-        );
-        return list.isEmpty() ? Optional.empty() : Optional.ofNullable(list.get(0));
-    }
-
-    /**
-     * Simple keyword search by category path.
-     */
     public List<Map<String, Object>> searchByKeyword(String keyword, int limit) {
         String kw = keyword == null ? "" : keyword.trim();
         if (kw.isEmpty()) return Collections.emptyList();
@@ -92,5 +89,45 @@ public class CategoryIdMapRepository {
         );
     }
 
+    /**
+     * Aggregates tags across the entire category_id_map table.
+     * category_id_map.tags stores comma-separated tags.
+     */
+    public List<String> findAllDistinctTags() {
+        List<String> rawList = jdbc.query(
+                "SELECT tags FROM category_id_map WHERE tags IS NOT NULL AND TRIM(tags) <> ''",
+                (rs, rowNum) -> rs.getString(1)
+        );
+
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String raw : rawList) {
+            if (raw == null) continue;
+            String s = raw.trim();
+            if (s.isEmpty()) continue;
+
+            String[] parts = s.split(",");
+            for (String p : parts) {
+                String t = p == null ? "" : p.trim();
+                if (!t.isEmpty()) out.add(t);
+            }
+        }
+
+        return new ArrayList<>(out);
+    }
+
     public record Row(long categoryId, String categoryPath) {}
+
+    private void ensureColumnExists(String table, String column, String ddlType) {
+        try {
+            List<String> cols = jdbc.query(
+                    "PRAGMA table_info(" + table + ")",
+                    (rs, rowNum) -> rs.getString("name")
+            );
+            for (String c : cols) {
+                if (column.equalsIgnoreCase(c)) return;
+            }
+            jdbc.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddlType);
+        } catch (Exception ignore) {
+        }
+    }
 }

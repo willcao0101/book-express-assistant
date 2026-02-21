@@ -171,8 +171,9 @@ public class ShopifyGraphqlClient {
     }
 
     /**
-     * Returns the GraphQL response so callers (SyncService) can persist it.
-     * Keeps existing behavior: throws when userErrors is not empty.
+     * Updates Shopify product using ProductUpdateInput.
+     * Important: updatePayload may contain extra fields (e.g. productId), which must be ignored.
+     * This method returns the GraphQL response so SyncService can persist it.
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> productUpdate(Long accountId, String productId, Map<String, Object> updatePayload) {
@@ -180,39 +181,132 @@ public class ShopifyGraphqlClient {
         if (productId == null || productId.isBlank()) throw new BusinessException("productId is required");
 
         String gql = """
-            mutation ProductUpdate($input: ProductInput!) {
-              productUpdate(input: $input) {
-                product { id title }
+            mutation ProductUpdate($product: ProductUpdateInput!) {
+              productUpdate(product: $product) {
+                product { id title tags updatedAt }
                 userErrors { field message }
               }
             }
             """;
 
-        Map<String, Object> input = new LinkedHashMap<>();
-        input.put("id", normalizeProductGid(productId));
+        Map<String, Object> product = new LinkedHashMap<>();
+        product.put("id", normalizeProductGid(productId));
 
+        Map<String, Object> summary = null;
         if (updatePayload != null) {
-            for (Map.Entry<String, Object> e : updatePayload.entrySet()) {
-                if (e.getKey() == null) continue;
-                input.put(e.getKey(), e.getValue());
-            }
+            Object s = updatePayload.get("summary");
+            if (s instanceof Map<?, ?> m) summary = (Map<String, Object>) m;
+        }
+
+        // Title/vendor/productType/status/descriptionHtml (top-level preferred, fallback summary)
+        putIfNonBlank(product, "title", pickString(updatePayload, summary, "title"));
+        putIfNonBlank(product, "vendor", pickString(updatePayload, summary, "vendor"));
+        putIfNonBlank(product, "productType", pickString(updatePayload, summary, "productType"));
+        putIfNonBlank(product, "status", pickString(updatePayload, summary, "status"));
+        putIfNonBlank(product, "descriptionHtml", pickString(updatePayload, summary, "descriptionHtml"));
+
+        // Tags: must be List<String>. Top-level preferred.
+        Object tagsObj = pickObject(updatePayload, summary, "tags");
+        List<String> tags = toStringList(tagsObj);
+        if (!tags.isEmpty()) {
+            product.put("tags", tags);
+        }
+
+        // SEO (optional)
+        Object seoObj = pickObject(updatePayload, summary, "seo");
+        if (seoObj instanceof Map<?, ?> seoMap) {
+            Map<String, Object> seo = new LinkedHashMap<>();
+            String seoTitle = seoMap.get("title") == null ? "" : String.valueOf(seoMap.get("title")).trim();
+            String seoDesc = seoMap.get("description") == null ? "" : String.valueOf(seoMap.get("description")).trim();
+            if (!seoTitle.isBlank()) seo.put("title", seoTitle);
+            if (!seoDesc.isBlank()) seo.put("description", seoDesc);
+            if (!seo.isEmpty()) product.put("seo", seo);
+        }
+
+        // Metafields: List<Map> with namespace/key/type/value
+        Object metafieldsObj = updatePayload == null ? null : updatePayload.get("metafields");
+        List<Map<String, Object>> metafields = toMetafieldInputs(metafieldsObj);
+        if (!metafields.isEmpty()) {
+            product.put("metafields", metafields);
         }
 
         Map<String, Object> variables = new LinkedHashMap<>();
-        variables.put("input", input);
+        variables.put("product", product);
 
         Map<String, Object> resp = postGraphql(accountId, gql, variables);
 
         Map<String, Object> data = (Map<String, Object>) resp.get("data");
-        Map<String, Object> productUpdate = data == null ? null : (Map<String, Object>) data.get("productUpdate");
-        if (productUpdate == null) return resp;
+        Map<String, Object> pu = data == null ? null : (Map<String, Object>) data.get("productUpdate");
+        if (pu == null) return resp;
 
-        Object errorsObj = productUpdate.get("userErrors");
+        Object errorsObj = pu.get("userErrors");
         if (errorsObj instanceof List<?> errors && !errors.isEmpty()) {
             throw new BusinessException("Shopify productUpdate failed: " + errors);
         }
 
         return resp;
+    }
+
+    private static void putIfNonBlank(Map<String, Object> target, String key, String value) {
+        if (value != null && !value.isBlank()) target.put(key, value);
+    }
+
+    private static String pickString(Map<String, Object> payload, Map<String, Object> summary, String key) {
+        if (payload != null) {
+            Object v = payload.get(key);
+            if (v != null) {
+                String s = String.valueOf(v).trim();
+                if (!s.isBlank()) return s;
+            }
+        }
+        if (summary != null) {
+            Object v = summary.get(key);
+            if (v != null) {
+                String s = String.valueOf(v).trim();
+                if (!s.isBlank()) return s;
+            }
+        }
+        return "";
+    }
+
+    private static Object pickObject(Map<String, Object> payload, Map<String, Object> summary, String key) {
+        if (payload != null && payload.containsKey(key)) return payload.get(key);
+        return summary == null ? null : summary.get(key);
+    }
+
+    private static List<String> toStringList(Object obj) {
+        if (!(obj instanceof List<?> list)) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        for (Object o : list) {
+            String s = o == null ? "" : String.valueOf(o).trim();
+            if (!s.isBlank()) out.add(s);
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> toMetafieldInputs(Object metafieldsObj) {
+        if (!(metafieldsObj instanceof List<?> list)) return Collections.emptyList();
+
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) continue;
+
+            String namespace = m.get("namespace") == null ? "" : String.valueOf(m.get("namespace")).trim();
+            String key = m.get("key") == null ? "" : String.valueOf(m.get("key")).trim();
+            String value = m.get("value") == null ? "" : String.valueOf(m.get("value")).trim();
+            String type = m.get("type") == null ? "" : String.valueOf(m.get("type")).trim();
+
+            if (namespace.isBlank() || key.isBlank() || type.isBlank()) continue;
+
+            Map<String, Object> one = new LinkedHashMap<>();
+            one.put("namespace", namespace);
+            one.put("key", key);
+            one.put("value", value);
+            one.put("type", type);
+            out.add(one);
+        }
+        return out;
     }
 
     public Map<String, Set<String>> querySmartCollectionTagEqualsMappings(Long accountId) {
@@ -374,17 +468,15 @@ public class ShopifyGraphqlClient {
     private String normalizeProductGid(String productId) {
         String s = productId.trim();
         if (s.startsWith("gid://")) return s;
-        if (s.matches("\\d+")) {
-            return "gid://shopify/Product/" + s;
-        }
+        if (s.matches("\\d+")) return "gid://shopify/Product/" + s;
         return s;
     }
 
-    private String normalizeString(Object o) {
+    private static String normalizeString(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
     }
 
-    private long parseGidToLong(Object gidObj) {
+    private static long parseGidToLong(Object gidObj) {
         if (gidObj == null) return 0L;
         String gid = String.valueOf(gidObj).trim();
         if (gid.isBlank()) return 0L;

@@ -1,5 +1,6 @@
 package com.bookexpress.shopify.service;
 
+import com.bookexpress.backend.repository.CategoryIdMapRepository;
 import com.bookexpress.shopify.client.ShopifyGraphqlClient;
 import org.springframework.stereotype.Service;
 
@@ -11,6 +12,7 @@ import java.util.stream.Collectors;
 public class ShopifyService {
 
     private final ShopifyGraphqlClient client;
+    private final CategoryIdMapRepository categoryIdMapRepository;
 
     private static final Map<String, Long> CATEGORY_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
     private static final Map<String, String> TAGS_TITLE_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
@@ -18,8 +20,14 @@ public class ShopifyService {
     private static final Map<String, String> MEDIA_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
     private static final Map<String, Integer> MEDIA_MIN_LONGEST_SIDE_CACHE_BY_PRODUCT_ID = new ConcurrentHashMap<>();
 
-    public ShopifyService(ShopifyGraphqlClient client) {
+    // All tags options cache (from category_id_map.tags across all rows)
+    private static volatile List<String> ALL_TAGS_OPTIONS_CACHE = null;
+    private static volatile long ALL_TAGS_OPTIONS_CACHE_AT_MS = 0L;
+    private static final long ALL_TAGS_OPTIONS_TTL_MS = 5 * 60 * 1000L; // 5 minutes
+
+    public ShopifyService(ShopifyGraphqlClient client, CategoryIdMapRepository categoryIdMapRepository) {
         this.client = client;
+        this.categoryIdMapRepository = categoryIdMapRepository;
     }
 
     public static Long getCachedCategoryId(String productIdOrGid) {
@@ -94,17 +102,26 @@ public class ShopifyService {
         Map<String, Object> summary = (Map<String, Object>) view.get("summary");
         if (summary != null) {
             String pid = summary.get("id") == null ? null : String.valueOf(summary.get("id")).trim();
-            Long cat = summary.get("categoryId") instanceof Number n ? n.longValue() : null;
+
+            long cat = 0L;
+            Object catObj = summary.get("categoryId");
+            if (catObj instanceof Number n) cat = n.longValue();
+            else if (catObj != null) {
+                try { cat = Long.parseLong(String.valueOf(catObj).trim()); } catch (Exception ignore) {}
+            }
+
             String tagsTitle = summary.get("tagsTitle") == null ? null : String.valueOf(summary.get("tagsTitle")).trim();
             String mediaText = summary.get("media") == null ? null : String.valueOf(summary.get("media")).trim();
-            Integer minLongestSide = summary.get("mediaMinLongestSide") instanceof Number n ? n.intValue() : null;
 
-            if (pid != null && cat != null) {
-                cacheCategoryAndTagsTitle(pid, cat, tagsTitle);
+            Integer minLongestSide = null;
+            Object mls = summary.get("mediaMinLongestSide");
+            if (mls instanceof Number n) minLongestSide = n.intValue();
+            else if (mls != null) {
+                try { minLongestSide = Integer.parseInt(String.valueOf(mls).trim()); } catch (Exception ignore) {}
             }
-            if (pid != null) {
-                cacheMedia(pid, mediaText, minLongestSide);
-            }
+
+            if (pid != null && cat > 0) cacheCategoryAndTagsTitle(pid, cat, tagsTitle);
+            if (pid != null) cacheMedia(pid, mediaText, minLongestSide);
         }
 
         return result;
@@ -140,18 +157,15 @@ public class ShopifyService {
         summary.put("tagsTitle", tt.tagsTitle());
         summary.put("categoryId", tt.categoryId());
 
+        // Keep this for other logic if you still need it
+        summary.put("allowedTags", loadAllowedTags(tt.categoryId()));
+
+        // New: tagsOptions = all tags in category_id_map.tags (global)
+        summary.put("tagsOptions", loadAllTagsOptions());
+
         MediaSummary mediaSummary = buildMediaSummary(product);
         summary.put("media", mediaSummary.text());
         summary.put("mediaMinLongestSide", mediaSummary.minLongestSide());
-
-        System.out.println("========== Concise Summary ==========");
-        System.out.println("productId  : " + String.valueOf(summary.get("id")));
-        System.out.println("title      : " + String.valueOf(summary.get("title")));
-        System.out.println("tags       : " + String.valueOf(summary.get("tags")));
-        System.out.println("tagsTitle  : " + tt.tagsTitle());
-        System.out.println("categoryId : " + tt.categoryId());
-        System.out.println("media      : " + mediaSummary.text());
-        System.out.println("minSide    : " + mediaSummary.minLongestSide());
 
         view.put("summary", summary);
 
@@ -179,6 +193,48 @@ public class ShopifyService {
         return view;
     }
 
+    private List<String> loadAllTagsOptions() {
+        long now = System.currentTimeMillis();
+        List<String> cached = ALL_TAGS_OPTIONS_CACHE;
+        if (cached != null && (now - ALL_TAGS_OPTIONS_CACHE_AT_MS) < ALL_TAGS_OPTIONS_TTL_MS) {
+            return cached;
+        }
+        synchronized (ShopifyService.class) {
+            cached = ALL_TAGS_OPTIONS_CACHE;
+            if (cached != null && (now - ALL_TAGS_OPTIONS_CACHE_AT_MS) < ALL_TAGS_OPTIONS_TTL_MS) {
+                return cached;
+            }
+            List<String> tags = categoryIdMapRepository.findAllDistinctTags();
+            ALL_TAGS_OPTIONS_CACHE = tags;
+            ALL_TAGS_OPTIONS_CACHE_AT_MS = now;
+            return tags;
+        }
+    }
+
+    private List<String> loadAllowedTags(long categoryId) {
+        if (categoryId <= 0) return Collections.emptyList();
+        try {
+            return categoryIdMapRepository.findTagsById(categoryId)
+                    .map(this::splitTags)
+                    .orElse(Collections.emptyList());
+        } catch (Exception ignore) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<String> splitTags(String raw) {
+        if (raw == null) return Collections.emptyList();
+        String s = raw.trim();
+        if (s.isEmpty()) return Collections.emptyList();
+        String[] parts = s.split(",");
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String p : parts) {
+            String t = p == null ? "" : p.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return new ArrayList<>(out);
+    }
+
     private MediaSummary buildMediaSummary(Map<String, Object> product) {
         List<int[]> sizes = new ArrayList<>();
 
@@ -196,8 +252,7 @@ public class ShopifyService {
             if (w != null && h != null && w > 0 && h > 0) sizes.add(new int[]{w, h});
         }
 
-        List<int[]> mediaSizes = extractMediaImageSizes(product.get("media"));
-        sizes.addAll(mediaSizes);
+        sizes.addAll(extractMediaImageSizes(product.get("media")));
 
         if (sizes.isEmpty()) return new MediaSummary("", null);
 

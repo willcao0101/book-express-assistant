@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Input, Space, Table, Typography, message } from "antd";
+import { Alert, Button, Card, Input, Select, Space, Table, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useLocation, useParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
@@ -15,7 +15,7 @@ const COL_4 = 260;
 const COL_5 = 360;
 const TABLE_X = COL_1 + COL_2 + COL_3 + COL_4 + COL_5; // 1280
 
-type EditableSummaryField = "title" | "vendor" | "productType" | "tags" | "descriptionHtml";
+type EditableSummaryField = "title" | "vendor" | "productType" | "descriptionHtml";
 
 type ValidationCell = {
   level: string;
@@ -29,13 +29,15 @@ type SummaryData = {
   status?: string;
   vendor?: string;
   productType?: string;
-  tags?: string[] | string;
+  tags?: any;
   tagsTitle?: string;
   descriptionHtml?: string;
   createdAt?: string;
   updatedAt?: string;
+
+  // Added fields from backend summary
   media?: string;
-  mediaMinLongestSide?: number;
+  tagsOptions?: string[];
 };
 
 type MetafieldItem = {
@@ -72,11 +74,27 @@ function toStringValue(v: any): string {
   return String(v);
 }
 
-function splitCsv(input: string): string[] {
-  return input
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+function toStringList(v: any): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) {
+    return v.map((x) => String(x ?? "").trim()).filter(Boolean);
+  }
+  const s = String(v).trim();
+  if (!s) return [];
+  return s.split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+function uniq(list: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of list) {
+    const t = (x ?? "").trim();
+    if (!t) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
 }
 
 /**
@@ -99,6 +117,14 @@ function normalizeFieldPath(path: string): string {
   return path.replace(/\[(\d+)\]/g, ".$1").replace(/^\./, "");
 }
 
+function toAntdTextType(level: string): "success" | "warning" | "danger" | "secondary" {
+  const lv = (level || "").toUpperCase();
+  if (lv === "OK") return "success";
+  if (lv === "WARNING" || lv === "WARN") return "warning";
+  if (lv === "ERROR") return "danger";
+  return "secondary";
+}
+
 export default function DetailPage() {
   const { productId } = useParams();
   const location = useLocation() as any;
@@ -114,9 +140,12 @@ export default function DetailPage() {
     title: "",
     vendor: "",
     productType: "",
-    tags: "",
     descriptionHtml: "",
   });
+
+  // Tags select state
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagsOptions, setTagsOptions] = useState<string[]>([]);
 
   // Metafield state (value editable)
   const [metafields, setMetafields] = useState<MetafieldItem[]>([]);
@@ -138,7 +167,7 @@ export default function DetailPage() {
           const def = data.find((a: any) => a.isDefault) || data[0];
           setAccountId(def.id);
         } catch {
-          // Ignore here
+          // ignore
         }
       })();
     }
@@ -153,10 +182,10 @@ export default function DetailPage() {
             accountId,
             productId: String(productId),
           });
-          if (!res.success) throw new Error(res.message || "Fetch failed");
+          if (!res.success) throw new Error(res.message || "Failed to fetch product detail");
           setProductData(res.data);
         } catch (e: any) {
-          message.error(e.message || "Failed to load detail");
+          message.error(e.message || "Failed to load detail data");
         } finally {
           setLoadingDetail(false);
         }
@@ -165,51 +194,96 @@ export default function DetailPage() {
   }, [productData, accountId, productId]);
 
   useEffect(() => {
-    if (!productData) return;
+    if (!productData) {
+      setSummary({});
+      setEditableSummary({ title: "", vendor: "", productType: "", descriptionHtml: "" });
+      setSelectedTags([]);
+      setTagsOptions([]);
+      setMetafields([]);
+      setMetafieldValues({});
+      setFieldErrors({});
+      setValidation(null);
+      return;
+    }
 
-    const nextSummary: SummaryData = productData?.view?.summary || {};
-    setSummary(nextSummary);
+    const s = productData?.view?.summary || {};
+    const mfs = (productData?.view?.metafields || []) as MetafieldItem[];
 
+    const currentTags = toStringList(s.tags);
+    const optionsFromDb = toStringList(s.tagsOptions);
+
+    // Ensure current tags are always selectable even if not in DB options (safe fallback)
+    const mergedOptions = uniq([...optionsFromDb, ...currentTags]);
+
+    const normalizedSummary: SummaryData = {
+      id: toPlainId(s.id),
+      title: s.title || "",
+      handle: s.handle || "",
+      status: s.status || "",
+      vendor: s.vendor || "",
+      productType: s.productType || "",
+      tags: currentTags,
+      tagsTitle: s.tagsTitle || "",
+      descriptionHtml: s.descriptionHtml || "",
+      createdAt: s.createdAt || "",
+      updatedAt: s.updatedAt || "",
+      media: s.media || "",
+      tagsOptions: mergedOptions,
+    };
+
+    setSummary(normalizedSummary);
     setEditableSummary({
-      title: toStringValue(nextSummary.title),
-      vendor: toStringValue(nextSummary.vendor),
-      productType: toStringValue(nextSummary.productType),
-      tags: Array.isArray(nextSummary.tags) ? nextSummary.tags.join(", ") : toStringValue(nextSummary.tags),
-      descriptionHtml: toStringValue(nextSummary.descriptionHtml),
+      title: toStringValue(normalizedSummary.title),
+      vendor: toStringValue(normalizedSummary.vendor),
+      productType: toStringValue(normalizedSummary.productType),
+      descriptionHtml: toStringValue(normalizedSummary.descriptionHtml),
     });
 
-    const mfs: MetafieldItem[] = productData?.view?.metafields || [];
-    setMetafields(mfs);
+    setSelectedTags(currentTags);
+    setTagsOptions(mergedOptions);
 
-    const nextMfValues: Record<number, string> = {};
-    mfs.forEach((mf, idx) => {
-      nextMfValues[idx] = toStringValue(mf.value);
+    const normalizedMetafields = mfs.map((mf) => ({
+      id: toPlainId(mf.id),
+      namespace: mf.namespace || "",
+      key: mf.key || "",
+      type: mf.type || "",
+      value: toStringValue(mf.value),
+    }));
+    setMetafields(normalizedMetafields);
+
+    const initialValues: Record<number, string> = {};
+    normalizedMetafields.forEach((mf, idx) => {
+      initialValues[idx] = toStringValue(mf.value);
     });
-    setMetafieldValues(nextMfValues);
+    setMetafieldValues(initialValues);
 
-    // Reset validation state when product changes
     setFieldErrors({});
     setValidation(null);
   }, [productData]);
 
-  const onChangeSummary = (field: EditableSummaryField, v: string) => {
-    setEditableSummary((prev) => ({ ...prev, [field]: v }));
+  const onChangeSummary = (field: EditableSummaryField, value: string) => {
+    setEditableSummary((prev) => ({ ...prev, [field]: value }));
   };
 
-  const onChangeMetafieldValue = (idx: number, v: string) => {
-    setMetafieldValues((prev) => ({ ...prev, [idx]: v }));
+  const onChangeMetafieldValue = (idx: number, value: string) => {
+    setMetafieldValues((prev) => ({ ...prev, [idx]: value }));
   };
+
+  const selectOptions = useMemo(() => {
+    return uniq([...(tagsOptions || []), ...(selectedTags || [])]).map((t) => ({
+      label: t,
+      value: t,
+    }));
+  }, [tagsOptions, selectedTags]);
 
   const updatePayload = useMemo(() => {
     return {
-      summary: {
-        ...summary,
-        title: editableSummary.title,
-        vendor: editableSummary.vendor,
-        productType: editableSummary.productType,
-        tags: splitCsv(editableSummary.tags),
-        descriptionHtml: editableSummary.descriptionHtml,
-      },
+      productId: String(productId || ""),
+      title: editableSummary.title,
+      vendor: editableSummary.vendor,
+      productType: editableSummary.productType,
+      tags: selectedTags,
+      descriptionHtml: editableSummary.descriptionHtml,
       metafields: metafields.map((mf, idx) => ({
         namespace: mf.namespace || "",
         key: mf.key || "",
@@ -217,7 +291,7 @@ export default function DetailPage() {
         value: metafieldValues[idx] ?? "",
       })),
     };
-  }, [productId, editableSummary, metafields, metafieldValues, summary]);
+  }, [productId, editableSummary, selectedTags, metafields, metafieldValues]);
 
   const applyInlineErrors = (issues: any[] = []) => {
     const next: Record<string, ValidationCell> = {};
@@ -225,10 +299,11 @@ export default function DetailPage() {
     issues.forEach((it) => {
       const raw = String(it?.fieldPath || "").trim();
       if (!raw) return;
-      const msg = String(it?.message || "Validation failed");
-      const level = String(it?.level || "").toUpperCase();
-      const cell: ValidationCell = { level: level || "WARNING", message: msg };
 
+      const msg = String(it?.message || "Validation failed");
+      const level = String(it?.level || "WARNING").toUpperCase();
+
+      const cell: ValidationCell = { level, message: msg };
       next[raw] = cell;
       next[normalizeFieldPath(raw)] = cell;
     });
@@ -284,9 +359,15 @@ export default function DetailPage() {
     { rowKey: "summary-title", field: "title", value: editableSummary.title, editable: true, error: getSummaryError("title"), bindField: "title" },
     { rowKey: "summary-vendor", field: "vendor", value: editableSummary.vendor, editable: true, error: getSummaryError("vendor"), bindField: "vendor" },
     { rowKey: "summary-productType", field: "productType", value: editableSummary.productType, editable: true, error: getSummaryError("productType"), bindField: "productType" },
-    { rowKey: "summary-tags", field: "tags", value: editableSummary.tags, editable: true, error: getSummaryError("tags"), bindField: "tags" },
+
+    // Tags row: multi select
+    { rowKey: "summary-tags", field: "tags", value: selectedTags.join(", "), editable: true, error: getSummaryError("tags"), bindField: "" },
+
     { rowKey: "summary-tagsTitle", field: "tagsTitle", value: toStringValue(summary.tagsTitle), editable: false, error: getSummaryError("tagsTitle"), bindField: "" },
+
+    // Media row: display only
     { rowKey: "summary-media", field: "media", value: toStringValue(summary.media), editable: false, error: getSummaryError("media"), bindField: "" },
+
     { rowKey: "summary-descriptionHtml", field: "descriptionHtml", value: editableSummary.descriptionHtml, editable: true, error: getSummaryError("descriptionHtml"), bindField: "descriptionHtml" },
   ];
 
@@ -309,6 +390,22 @@ export default function DetailPage() {
       key: "value",
       width: COL_2 + COL_3 + COL_4,
       render: (_: any, row: SummaryRow) => {
+        if (row.field === "tags") {
+          return (
+            <Select
+              mode="multiple"
+              style={{ width: "100%" }}
+              placeholder="Select tags"
+              value={selectedTags}
+              options={selectOptions}
+              onChange={(vals) => setSelectedTags(vals as string[])}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+            />
+          );
+        }
+
         if (!row.editable) {
           const isMedia = row.field === "media";
           return (
@@ -317,12 +414,8 @@ export default function DetailPage() {
             </Text>
           );
         }
-        return (
-          <Input
-            value={row.value}
-            onChange={(e) => onEditSummaryValue(row, e.target.value)}
-          />
-        );
+
+        return <Input value={row.value} onChange={(e) => onEditSummaryValue(row, e.target.value)} />;
       },
     },
     {
@@ -332,9 +425,7 @@ export default function DetailPage() {
       width: COL_5,
       render: (v: ValidationCell | undefined) => {
         if (!v) return <Text type="secondary">-</Text>;
-        const lv = String(v.level || "").toUpperCase();
-        const type = lv === "OK" ? "success" : lv === "WARNING" || lv === "WARN" ? "warning" : "danger";
-        return <Text type={type as any}>{v.message}</Text>;
+        return <Text type={toAntdTextType(v.level)}>{v.message}</Text>;
       },
     },
   ];
@@ -369,9 +460,7 @@ export default function DetailPage() {
       width: COL_5,
       render: (v: ValidationCell | undefined) => {
         if (!v) return <Text type="secondary">-</Text>;
-        const lv = String(v.level || "").toUpperCase();
-        const type = lv === "OK" ? "success" : lv === "WARNING" || lv === "WARN" ? "warning" : "danger";
-        return <Text type={type as any}>{v.message}</Text>;
+        return <Text type={toAntdTextType(v.level)}>{v.message}</Text>;
       },
     },
   ];
@@ -400,11 +489,12 @@ export default function DetailPage() {
                 style={{ marginBottom: 12 }}
                 type={validation?.pass ? "success" : "warning"}
                 message={validation?.pass ? "Validation passed" : "Validation issues found"}
-                description={
-                  <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                    {JSON.stringify(validation, null, 2)}
-                  </pre>
-                }
+                // description={
+                //   <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                //     {JSON.stringify(validation, null, 2)}
+                //   </pre>
+                // }
+                showIcon
               />
             )}
 
